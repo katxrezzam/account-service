@@ -17,6 +17,7 @@ public final class MovementMapper {
                 movement.getAmount(),
                 movement.getBalanceAfter(),
                 movement.getTimestamp(),
-                movement.getDescription());
+                movement.getDescription(),
+                movement.getCounterpartyAccountId());
     }
 }

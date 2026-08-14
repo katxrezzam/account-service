@@ -46,4 +46,9 @@ public class Movement {
     /** Solo se usa en movimientos tipo FEE, para dejar auditable el motivo del cobro (ej.
      * "Comision por exceso de movimientos mensuales"). Null en DEPOSIT/WITHDRAWAL. */
     private String description;
+
+    /** Solo se usa en movimientos que forman parte de una transferencia (deposito/retiro con su
+     * contraparte, y el deposito de compensacion si la transferencia fallo a mitad de camino):
+     * el id de la otra cuenta involucrada. Null en depositos/retiros sueltos y en comisiones. */
+    private String counterpartyAccountId;
 }

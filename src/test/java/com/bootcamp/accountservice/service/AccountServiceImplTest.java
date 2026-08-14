@@ -2,6 +2,7 @@ package com.bootcamp.accountservice.service;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -12,6 +13,7 @@ import com.bootcamp.accountservice.client.CustomerClient;
 import com.bootcamp.accountservice.dto.AccountRequest;
 import com.bootcamp.accountservice.dto.CustomerInfo;
 import com.bootcamp.accountservice.dto.MovementRequest;
+import com.bootcamp.accountservice.dto.TransferRequest;
 import com.bootcamp.accountservice.exception.AccountNotFoundException;
 import com.bootcamp.accountservice.exception.InsufficientFundsException;
 import com.bootcamp.accountservice.exception.InvalidBusinessRuleException;
@@ -439,5 +441,209 @@ class AccountServiceImplTest {
         StepVerifier.create(service.findMovements("acc1"))
                 .expectNextCount(1)
                 .verifyComplete();
+    }
+
+    // ---------- transfer ----------
+
+    private Account accountWith(String id, AccountType type, String balance) {
+        return Account.builder().id(id).accountType(type).profile(AccountProfile.STANDARD)
+                .holders(List.of("cust-" + id)).signers(List.of())
+                .balance(new BigDecimal(balance)).build();
+    }
+
+    @Test
+    void transfer_sinIdempotencyKey_falla() {
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc2", new BigDecimal("30")), null))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    @Test
+    void transfer_mismaCuentaOrigenYDestino_falla() {
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc1", new BigDecimal("30")), "tr-same"))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    @Test
+    void transfer_valida_retiraDeOrigenYDepositaEnDestino() {
+        Account source = accountWith("acc1", AccountType.SAVINGS, "100.00");
+        Account destination = accountWith("acc2", AccountType.SAVINGS, "50.00");
+        Account sourceUpdated = accountWith("acc1", AccountType.SAVINGS, "70.00");
+        Account destinationUpdated = accountWith("acc2", AccountType.SAVINGS, "80.00");
+        Movement outMovement = Movement.builder().id("mv-out").accountId("acc1")
+                .type(MovementType.WITHDRAWAL).amount(new BigDecimal("30.00"))
+                .balanceAfter(new BigDecimal("70.00")).timestamp(Instant.now())
+                .idempotencyKey("tr-1:out").counterpartyAccountId("acc2").build();
+        Movement inMovement = Movement.builder().id("mv-in").accountId("acc2")
+                .type(MovementType.DEPOSIT).amount(new BigDecimal("30.00"))
+                .balanceAfter(new BigDecimal("80.00")).timestamp(Instant.now())
+                .idempotencyKey("tr-1:in").counterpartyAccountId("acc1").build();
+
+        when(movementRepository.findByIdempotencyKey("tr-1:out")).thenReturn(Mono.empty());
+        when(accountRepository.findById("acc1")).thenReturn(Mono.just(source));
+        when(accountRepository.findById("acc2")).thenReturn(Mono.just(destination));
+        when(movementRepository.countByAccountIdAndTimestampBetween(
+                        anyString(), any(Instant.class), any(Instant.class)))
+                .thenReturn(Mono.just(0L));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                        any(FindAndModifyOptions.class), eq(Account.class)))
+                .thenReturn(Mono.just(sourceUpdated), Mono.just(destinationUpdated));
+        when(movementRepository.save(any(Movement.class)))
+                .thenReturn(Mono.just(outMovement), Mono.just(inMovement));
+
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc2", new BigDecimal("30.00")), "tr-1"))
+                .expectNextMatches(response ->
+                        "acc1".equals(response.sourceAccountId())
+                                && "acc2".equals(response.destinationAccountId())
+                                && response.sourceBalanceAfter().compareTo(new BigDecimal("70.00")) == 0
+                                && response.destinationBalanceAfter()
+                                        .compareTo(new BigDecimal("80.00")) == 0)
+                .verifyComplete();
+
+        verify(movementRepository, times(2)).save(any(Movement.class));
+    }
+
+    @Test
+    void transfer_cuentaDestinoInexistente_fallaSinRetirarNada() {
+        Account source = accountWith("acc1", AccountType.SAVINGS, "100.00");
+        when(movementRepository.findByIdempotencyKey("tr-2:out")).thenReturn(Mono.empty());
+        when(accountRepository.findById("acc1")).thenReturn(Mono.just(source));
+        when(accountRepository.findById("no-existe")).thenReturn(Mono.empty());
+
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("no-existe", new BigDecimal("30.00")), "tr-2"))
+                .expectError(AccountNotFoundException.class)
+                .verify();
+
+        verify(mongoTemplate, never()).findAndModify(
+                any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(Account.class));
+    }
+
+    @Test
+    void transfer_depositoFallaTrasRetiro_compensaYPropagaElErrorOriginal() {
+        // destino a plazo fijo fuera de su dia habilitado: falla DESPUES de haber retirado del
+        // origen, dispara la compensacion (revertir el retiro) - D6.
+        Account source = accountWith("acc1", AccountType.SAVINGS, "100.00");
+        Account sourceUpdated = accountWith("acc1", AccountType.SAVINGS, "70.00");
+        Account sourceRestored = accountWith("acc1", AccountType.SAVINGS, "100.00");
+        Account destinationFixedTerm = Account.builder().id("acc-ft")
+                .accountType(AccountType.FIXED_TERM).profile(AccountProfile.STANDARD)
+                .holders(List.of("cust-ft")).signers(List.of())
+                .balance(new BigDecimal("500.00"))
+                .allowedMovementDay(1).build();
+        Movement outMovement = Movement.builder().id("mv-out").accountId("acc1")
+                .type(MovementType.WITHDRAWAL).amount(new BigDecimal("30.00"))
+                .balanceAfter(new BigDecimal("70.00")).timestamp(Instant.now())
+                .idempotencyKey("tr-3:out").counterpartyAccountId("acc-ft").build();
+        Movement compensationMovement = Movement.builder().id("mv-comp").accountId("acc1")
+                .type(MovementType.DEPOSIT).amount(new BigDecimal("30.00"))
+                .balanceAfter(new BigDecimal("100.00")).timestamp(Instant.now())
+                .idempotencyKey("tr-3:compensation").build();
+
+        when(movementRepository.findByIdempotencyKey("tr-3:out")).thenReturn(Mono.empty());
+        when(accountRepository.findById("acc1")).thenReturn(Mono.just(source));
+        when(accountRepository.findById("acc-ft")).thenReturn(Mono.just(destinationFixedTerm));
+        when(movementRepository.countByAccountIdAndTimestampBetween(
+                        eq("acc1"), any(Instant.class), any(Instant.class)))
+                .thenReturn(Mono.just(0L));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                        any(FindAndModifyOptions.class), eq(Account.class)))
+                .thenReturn(Mono.just(sourceUpdated), Mono.just(sourceRestored));
+        when(movementRepository.save(any(Movement.class)))
+                .thenReturn(Mono.just(outMovement), Mono.just(compensationMovement));
+
+        // allowedMovementDay=1: si hoy fuera el dia 1 el test podria dar falso negativo una vez
+        // al mes - se acepta como limitacion conocida del enfoque basado en fecha real, igual
+        // que el resto de las reglas de plazo fijo ya existentes en este archivo.
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc-ft", new BigDecimal("30.00")), "tr-3"))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+
+        verify(movementRepository, times(2)).save(any(Movement.class));
+        verify(mongoTemplate, times(2)).findAndModify(
+                any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(Account.class));
+    }
+
+    @Test
+    void transfer_conIdempotencyKeyYaProcesada_devuelveElResumenExistente() {
+        Movement existingOut = Movement.builder().id("mv-out").accountId("acc1")
+                .amount(new BigDecimal("30.00")).balanceAfter(new BigDecimal("70.00"))
+                .timestamp(Instant.now()).idempotencyKey("tr-4:out").build();
+        Movement existingIn = Movement.builder().id("mv-in").accountId("acc2")
+                .amount(new BigDecimal("30.00")).balanceAfter(new BigDecimal("80.00"))
+                .timestamp(Instant.now()).idempotencyKey("tr-4:in").build();
+
+        when(movementRepository.findByIdempotencyKey("tr-4:out")).thenReturn(Mono.just(existingOut));
+        when(movementRepository.findByIdempotencyKey("tr-4:in")).thenReturn(Mono.just(existingIn));
+
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc2", new BigDecimal("30.00")), "tr-4"))
+                .expectNextMatches(response ->
+                        "acc1".equals(response.sourceAccountId())
+                                && "acc2".equals(response.destinationAccountId()))
+                .verifyComplete();
+
+        verify(accountRepository, never()).findById(anyString());
+    }
+
+    @Test
+    void transfer_conIdempotencyKeyDeUnaTransferenciaCompensada_falla() {
+        Movement existingOut = Movement.builder().id("mv-out").accountId("acc1")
+                .amount(new BigDecimal("30.00")).balanceAfter(new BigDecimal("70.00"))
+                .timestamp(Instant.now()).idempotencyKey("tr-5:out").build();
+
+        when(movementRepository.findByIdempotencyKey("tr-5:out")).thenReturn(Mono.just(existingOut));
+        when(movementRepository.findByIdempotencyKey("tr-5:in")).thenReturn(Mono.empty());
+
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc2", new BigDecimal("30.00")), "tr-5"))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    @Test
+    void transfer_origenSuperaLimiteMensual_cobraComisionSoloAlOrigen() {
+        Account source = accountWith("acc1", AccountType.SAVINGS, "1000.00");
+        Account destination = accountWith("acc2", AccountType.SAVINGS, "50.00");
+        Account sourceUpdated = accountWith("acc1", AccountType.SAVINGS, "970.00");
+        Account destinationUpdated = accountWith("acc2", AccountType.SAVINGS, "80.00");
+        Movement outMovement = Movement.builder().id("mv-out").accountId("acc1")
+                .amount(new BigDecimal("30.00")).balanceAfter(new BigDecimal("970.00"))
+                .timestamp(Instant.now()).idempotencyKey("tr-6:out").build();
+        Movement inMovement = Movement.builder().id("mv-in").accountId("acc2")
+                .amount(new BigDecimal("30.00")).balanceAfter(new BigDecimal("80.00"))
+                .timestamp(Instant.now()).idempotencyKey("tr-6:in").build();
+
+        when(movementRepository.findByIdempotencyKey("tr-6:out")).thenReturn(Mono.empty());
+        when(accountRepository.findById("acc1")).thenReturn(Mono.just(source));
+        when(accountRepository.findById("acc2")).thenReturn(Mono.just(destination));
+        when(movementRepository.countByAccountIdAndTimestampBetween(
+                        eq("acc1"), any(Instant.class), any(Instant.class)))
+                .thenReturn(Mono.just((long) MAX_MONTHLY_SAVINGS));
+        when(movementRepository.countByAccountIdAndTimestampBetween(
+                        eq("acc2"), any(Instant.class), any(Instant.class)))
+                .thenReturn(Mono.just(0L));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                        any(FindAndModifyOptions.class), eq(Account.class)))
+                .thenReturn(Mono.just(sourceUpdated), Mono.just(destinationUpdated));
+        when(movementRepository.save(any(Movement.class)))
+                .thenReturn(Mono.just(outMovement), Mono.just(inMovement));
+        when(accountFeeService.chargeFee(anyString(), any(BigDecimal.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc2", new BigDecimal("30.00")), "tr-6"))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        verify(accountFeeService, times(1)).chargeFee(
+                eq("acc1"), eq(EXCESS_FEE), eq("tr-6:out:excess-fee"), anyString());
+        verify(accountFeeService, never()).chargeFee(
+                eq("acc2"), any(BigDecimal.class), anyString(), anyString());
     }
 }

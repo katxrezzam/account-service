@@ -12,5 +12,6 @@ public record MovementResponse(
         BigDecimal amount,
         BigDecimal balanceAfter,
         Instant timestamp,
-        String description) {
+        String description,
+        String counterpartyAccountId) {
 }

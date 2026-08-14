@@ -10,6 +10,8 @@ import com.bootcamp.accountservice.dto.CustomerInfo;
 import com.bootcamp.accountservice.dto.MovementMapper;
 import com.bootcamp.accountservice.dto.MovementRequest;
 import com.bootcamp.accountservice.dto.MovementResponse;
+import com.bootcamp.accountservice.dto.TransferRequest;
+import com.bootcamp.accountservice.dto.TransferResponse;
 import com.bootcamp.accountservice.exception.AccountNotFoundException;
 import com.bootcamp.accountservice.exception.CustomerNotFoundException;
 import com.bootcamp.accountservice.exception.InsufficientFundsException;
@@ -332,18 +334,142 @@ public class AccountServiceImpl implements AccountService {
     private Mono<MovementResponse> executeMovement(
             String accountId, MovementRequest request, String idempotencyKey, MovementType type) {
         return findEntityById(accountId)
-                .flatMap(account -> resolveMovementRules(account)
-                        .flatMap(feeApplies -> applyBalanceChange(accountId, request.amount(), type)
-                                .flatMap(updatedAccount -> recordMovement(
-                                                updatedAccount, type, request.amount(),
-                                                idempotencyKey)
-                                        .flatMap(movement -> feeApplies
-                                                ? chargeExcessFee(accountId, idempotencyKey)
-                                                        .thenReturn(movement)
-                                                : Mono.just(movement)))))
+                .flatMap(account -> executeLeg(
+                        account, type, request.amount(), idempotencyKey, null))
                 .doOnNext(movement -> log.info(
                         "Movimiento {} registrado accountId={}", type, accountId))
                 .map(MovementMapper::toResponse);
+    }
+
+    /**
+     * Una "pata" de movimiento sobre una cuenta: valida el limite/comision de exceso, aplica el
+     * cambio de saldo atomico, registra el Movement y cobra la comision si corresponde.
+     * Reutilizada tanto por deposito/retiro sueltos (counterpartyAccountId null) como por cada
+     * lado de una transferencia (counterpartyAccountId = la otra cuenta involucrada).
+     */
+    private Mono<Movement> executeLeg(
+            Account account, MovementType type, BigDecimal amount, String idempotencyKey,
+            String counterpartyAccountId) {
+        return resolveMovementRules(account)
+                .flatMap(feeApplies -> applyBalanceChange(account.getId(), amount, type)
+                        .flatMap(updatedAccount -> recordMovement(
+                                        updatedAccount, type, amount, idempotencyKey,
+                                        counterpartyAccountId)
+                                .flatMap(movement -> (feeApplies
+                                        ? chargeExcessFee(account.getId(), idempotencyKey)
+                                        : Mono.<Void>empty())
+                                        .thenReturn(movement))));
+    }
+
+    // ---------- transferencias ----------
+
+    /**
+     * Transferencia entre dos cuentas de account-service (propias o a un tercero del mismo
+     * banco - mecanicamente identicas). Se ejecuta como retiro en origen + deposito en destino;
+     * si el deposito falla despues de haber retirado, se compensa revirtiendo el retiro
+     * (Saga local con compensacion - D6; no hace falta un Saga cross-service porque ambas
+     * cuentas viven en la misma base de account-service, no hay transaccion distribuida real).
+     */
+    @Override
+    public Mono<TransferResponse> transfer(
+            String sourceAccountId, TransferRequest request, String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return Mono.error(new InvalidBusinessRuleException(
+                    "El header Idempotency-Key es obligatorio en transferencias"));
+        }
+        String destinationAccountId = request.destinationAccountId();
+        if (sourceAccountId.equals(destinationAccountId)) {
+            return Mono.error(new InvalidBusinessRuleException(
+                    "La cuenta destino debe ser distinta de la cuenta origen"));
+        }
+        return findExistingMovement(idempotencyKey + ":out")
+                .flatMap(existingOut -> replayTransfer(existingOut, idempotencyKey))
+                .switchIfEmpty(Mono.defer(() -> executeTransfer(
+                        sourceAccountId, destinationAccountId, request.amount(), idempotencyKey)));
+    }
+
+    /**
+     * Reconstruye la respuesta de una transferencia ya procesada a partir de sus dos movimientos.
+     * Si la pata de salida existe pero la de entrada no, la transferencia se compenso (fallo a
+     * mitad de camino) - no hay nada que "reintentar" de forma limpia con la misma clave, porque
+     * el Movement de salida ya ocupa esa idempotencyKey (el historial de movimientos es
+     * inmutable, D7); el cliente debe reintentar con una Idempotency-Key nueva.
+     */
+    private Mono<TransferResponse> replayTransfer(Movement existingOut, String idempotencyKey) {
+        return movementRepository.findByIdempotencyKey(idempotencyKey + ":in")
+                .map(existingIn -> new TransferResponse(
+                        existingOut.getAccountId(),
+                        existingIn.getAccountId(),
+                        existingOut.getAmount(),
+                        existingOut.getBalanceAfter(),
+                        existingIn.getBalanceAfter(),
+                        existingOut.getTimestamp()))
+                .switchIfEmpty(Mono.error(new InvalidBusinessRuleException(
+                        "Esta transferencia ya se intento con esta Idempotency-Key y no se pudo "
+                                + "completar (se revirtio el retiro) - reintentar con una clave "
+                                + "nueva")));
+    }
+
+    private Mono<TransferResponse> executeTransfer(
+            String sourceAccountId, String destinationAccountId, BigDecimal amount,
+            String idempotencyKey) {
+        // se valida que ambas cuentas existan ANTES de mover plata, para no tener que compensar
+        // el caso comun de un id de destino invalido/inexistente.
+        return Mono.zip(findEntityById(sourceAccountId), findEntityById(destinationAccountId))
+                .flatMap(accounts -> executeLeg(
+                                accounts.getT1(), MovementType.WITHDRAWAL, amount,
+                                idempotencyKey + ":out", destinationAccountId)
+                        .flatMap(outMovement -> completeDestinationLeg(
+                                accounts.getT2(), amount, idempotencyKey, outMovement)))
+                .doOnNext(response -> log.info(
+                        "Transferencia registrada de {} a {} monto={}",
+                        sourceAccountId, destinationAccountId, amount));
+    }
+
+    private Mono<TransferResponse> completeDestinationLeg(
+            Account destination, BigDecimal amount, String idempotencyKey, Movement outMovement) {
+        return executeLeg(
+                        destination, MovementType.DEPOSIT, amount, idempotencyKey + ":in",
+                        outMovement.getAccountId())
+                .map(inMovement -> new TransferResponse(
+                        outMovement.getAccountId(),
+                        inMovement.getAccountId(),
+                        amount,
+                        outMovement.getBalanceAfter(),
+                        inMovement.getBalanceAfter(),
+                        outMovement.getTimestamp()))
+                .onErrorResume(ex -> compensateWithdrawal(
+                        outMovement.getAccountId(), amount, idempotencyKey, ex));
+    }
+
+    /**
+     * El deposito en destino fallo despues de haber retirado en origen: revierte el retiro con
+     * un deposito compensatorio (queda en el historial, no se borra el retiro original - D7) y
+     * propaga el error original al llamador. Si la propia compensacion fallara, es el unico caso
+     * real de inconsistencia posible en esta operacion: se loguea como fallo critico para
+     * revision manual, pero igual se propaga el error original (la transferencia, de cualquier
+     * forma, no se completo).
+     */
+    private Mono<TransferResponse> compensateWithdrawal(
+            String sourceAccountId, BigDecimal amount, String idempotencyKey, Throwable cause) {
+        log.error("Transferencia fallo tras retirar de la cuenta {} - compensando el retiro. "
+                + "idempotencyKey={}", sourceAccountId, idempotencyKey, cause);
+        Mono<Void> compensation = applyBalanceChange(sourceAccountId, amount, MovementType.DEPOSIT)
+                .flatMap(updated -> recordMovement(
+                        updated, MovementType.DEPOSIT, amount,
+                        idempotencyKey + ":compensation", null))
+                .doOnNext(m -> log.warn(
+                        "Compensacion aplicada: se revirtio el retiro de {} en la cuenta {}",
+                        amount, sourceAccountId))
+                .onErrorResume(compensationFailure -> {
+                    log.error("FALLO CRITICO: no se pudo compensar la transferencia de la "
+                            + "cuenta {} (idempotencyKey={}) - queda con el retiro aplicado sin "
+                            + "revertir, requiere revision manual", sourceAccountId,
+                            idempotencyKey, compensationFailure);
+                    return Mono.empty();
+                })
+                .then();
+        return compensation.then(Mono.<TransferResponse>error(cause));
     }
 
     /**
@@ -415,7 +541,8 @@ public class AccountServiceImpl implements AccountService {
     }
 
     private Mono<Movement> recordMovement(
-            Account account, MovementType type, BigDecimal amount, String idempotencyKey) {
+            Account account, MovementType type, BigDecimal amount, String idempotencyKey,
+            String counterpartyAccountId) {
         Movement movement = Movement.builder()
                 .accountId(account.getId())
                 .type(type)
@@ -423,6 +550,7 @@ public class AccountServiceImpl implements AccountService {
                 .balanceAfter(account.getBalance())
                 .timestamp(Instant.now())
                 .idempotencyKey(idempotencyKey)
+                .counterpartyAccountId(counterpartyAccountId)
                 .build();
         return movementRepository.save(movement);
     }

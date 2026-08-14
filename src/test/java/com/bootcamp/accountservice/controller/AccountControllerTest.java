@@ -83,7 +83,7 @@ class AccountControllerTest {
     @Test
     void deposit_conIdempotencyKey_retorna201() {
         MovementResponse response = new MovementResponse("mv1", "acc1", MovementType.DEPOSIT,
-                new BigDecimal("10"), new BigDecimal("110"), Instant.now(), null);
+                new BigDecimal("10"), new BigDecimal("110"), Instant.now(), null, null);
         when(accountService.deposit(eq("acc1"), any(MovementRequest.class), eq("key-1")))
                 .thenReturn(Mono.just(response));
 

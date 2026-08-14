@@ -5,6 +5,8 @@ import com.bootcamp.accountservice.dto.AccountResponse;
 import com.bootcamp.accountservice.dto.AccountUpdateRequest;
 import com.bootcamp.accountservice.dto.MovementRequest;
 import com.bootcamp.accountservice.dto.MovementResponse;
+import com.bootcamp.accountservice.dto.TransferRequest;
+import com.bootcamp.accountservice.dto.TransferResponse;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -28,4 +30,9 @@ public interface AccountService {
 
     Mono<MovementResponse> withdraw(
             String accountId, MovementRequest request, String idempotencyKey);
+
+    /** Transferencia entre dos cuentas (propias o a un tercero del mismo banco - mecanicamente
+     * identicas, ambas viven en account-service). sourceAccountId sale por path variable. */
+    Mono<TransferResponse> transfer(
+            String sourceAccountId, TransferRequest request, String idempotencyKey);
 }

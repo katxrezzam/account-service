@@ -5,6 +5,8 @@ import com.bootcamp.accountservice.dto.AccountResponse;
 import com.bootcamp.accountservice.dto.AccountUpdateRequest;
 import com.bootcamp.accountservice.dto.MovementRequest;
 import com.bootcamp.accountservice.dto.MovementResponse;
+import com.bootcamp.accountservice.dto.TransferRequest;
+import com.bootcamp.accountservice.dto.TransferResponse;
 import com.bootcamp.accountservice.service.AccountService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -81,5 +83,14 @@ public class AccountController {
             @Valid @RequestBody MovementRequest request,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         return accountService.withdraw(id, request, idempotencyKey);
+    }
+
+    @PostMapping("/{id}/transfers")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Mono<TransferResponse> transfer(
+            @PathVariable String id,
+            @Valid @RequestBody TransferRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        return accountService.transfer(id, request, idempotencyKey);
     }
 }
