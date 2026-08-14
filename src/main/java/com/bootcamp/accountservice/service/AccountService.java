@@ -8,6 +8,7 @@ import com.bootcamp.accountservice.dto.MovementResponse;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+/** Casos de uso de negocio sobre cuentas: CRUD + depositos/retiros. */
 public interface AccountService {
 
     Mono<AccountResponse> create(AccountRequest request);
@@ -22,7 +23,9 @@ public interface AccountService {
 
     Flux<MovementResponse> findMovements(String accountId);
 
-    Mono<MovementResponse> deposit(String accountId, MovementRequest request, String idempotencyKey);
+    Mono<MovementResponse> deposit(
+            String accountId, MovementRequest request, String idempotencyKey);
 
-    Mono<MovementResponse> withdraw(String accountId, MovementRequest request, String idempotencyKey);
+    Mono<MovementResponse> withdraw(
+            String accountId, MovementRequest request, String idempotencyKey);
 }

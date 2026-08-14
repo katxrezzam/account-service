@@ -56,12 +56,14 @@ public class AccountServiceImpl implements AccountService {
     private final CustomerClient customerClient;
     private final int maxMonthlySavingsMovements;
 
+    /** Inyeccion por constructor; maxMonthlySavingsMovements viene de la config externalizada. */
     public AccountServiceImpl(
             AccountRepository accountRepository,
             MovementRepository movementRepository,
             ReactiveMongoTemplate mongoTemplate,
             CustomerClient customerClient,
-            @Value("${bank.accounts.savings.max-monthly-movements}") int maxMonthlySavingsMovements) {
+            @Value("${bank.accounts.savings.max-monthly-movements}")
+            int maxMonthlySavingsMovements) {
         this.accountRepository = accountRepository;
         this.movementRepository = movementRepository;
         this.mongoTemplate = mongoTemplate;
@@ -72,13 +74,21 @@ public class AccountServiceImpl implements AccountService {
     @Override
     public Mono<AccountResponse> create(AccountRequest request) {
         return validateHoldersAndSigners(request.holders(), request.signers())
-                .flatMap(primaryHolderInfo -> validateFixedTermDay(request.accountType(), request.allowedMovementDay())
+                .flatMap(primaryHolderInfo -> validateFixedTermDay(
+                                request.accountType(), request.allowedMovementDay())
                         .then(validateHolderStructure(
-                                request.accountType(), request.holders(), request.signers(), primaryHolderInfo.customerType()))
+                                request.accountType(),
+                                request.holders(),
+                                request.signers(),
+                                primaryHolderInfo.customerType()))
                         .then(Mono.defer(() -> validateTypeUniqueness(
-                                request.holders().get(0), request.accountType(), primaryHolderInfo.customerType(), null))))
+                                request.holders().get(0),
+                                request.accountType(),
+                                primaryHolderInfo.customerType(),
+                                null))))
                 .then(Mono.defer(() -> accountRepository.save(AccountMapper.toEntity(request))))
-                .doOnNext(saved -> log.info("Cuenta creada id={} accountType={}", saved.getId(), saved.getAccountType()))
+                .doOnNext(saved -> log.info("Cuenta creada id={} accountType={}",
+                        saved.getId(), saved.getAccountType()))
                 .map(AccountMapper::toResponse);
     }
 
@@ -97,9 +107,15 @@ public class AccountServiceImpl implements AccountService {
         return findEntityById(id)
                 .flatMap(existing -> validateHoldersAndSigners(request.holders(), request.signers())
                         .flatMap(primaryHolderInfo -> validateHolderStructure(
-                                        existing.getAccountType(), request.holders(), request.signers(), primaryHolderInfo.customerType())
+                                        existing.getAccountType(),
+                                        request.holders(),
+                                        request.signers(),
+                                        primaryHolderInfo.customerType())
                                 .then(Mono.defer(() -> validateTypeUniqueness(
-                                        request.holders().get(0), existing.getAccountType(), primaryHolderInfo.customerType(), id))))
+                                        request.holders().get(0),
+                                        existing.getAccountType(),
+                                        primaryHolderInfo.customerType(),
+                                        id))))
                         .then(Mono.defer(() -> {
                             existing.setHolders(request.holders());
                             existing.setSigners(request.signers());
@@ -113,7 +129,9 @@ public class AccountServiceImpl implements AccountService {
     public Mono<Void> delete(String id) {
         return findEntityById(id)
                 .flatMap(account -> {
-                    if (account.getBalance() != null && account.getBalance().compareTo(BigDecimal.ZERO) != 0) {
+                    boolean hasBalance = account.getBalance() != null
+                            && account.getBalance().compareTo(BigDecimal.ZERO) != 0;
+                    if (hasBalance) {
                         return Mono.<Account>error(new InvalidBusinessRuleException(
                                 "No se puede eliminar una cuenta con saldo distinto de cero"));
                     }
@@ -131,12 +149,14 @@ public class AccountServiceImpl implements AccountService {
     }
 
     @Override
-    public Mono<MovementResponse> deposit(String accountId, MovementRequest request, String idempotencyKey) {
+    public Mono<MovementResponse> deposit(
+            String accountId, MovementRequest request, String idempotencyKey) {
         return processMovement(accountId, request, idempotencyKey, MovementType.DEPOSIT);
     }
 
     @Override
-    public Mono<MovementResponse> withdraw(String accountId, MovementRequest request, String idempotencyKey) {
+    public Mono<MovementResponse> withdraw(
+            String accountId, MovementRequest request, String idempotencyKey) {
         return processMovement(accountId, request, idempotencyKey, MovementType.WITHDRAWAL);
     }
 
@@ -151,7 +171,8 @@ public class AccountServiceImpl implements AccountService {
      * vacio/inventado pasaba sin chequeo). Devuelve el CustomerInfo del primer holder, que es el
      * que determina las reglas de tipo de cuenta (D8).
      */
-    private Mono<CustomerInfo> validateHoldersAndSigners(List<String> holders, List<String> signers) {
+    private Mono<CustomerInfo> validateHoldersAndSigners(
+            List<String> holders, List<String> signers) {
         List<String> allIds = new ArrayList<>(holders);
         if (signers != null) {
             allIds.addAll(signers);
@@ -165,7 +186,8 @@ public class AccountServiceImpl implements AccountService {
                         .filter(info -> info.id().equals(primaryHolderId))
                         .findFirst()
                         .map(Mono::just)
-                        .orElseGet(() -> Mono.error(new CustomerNotFoundException(primaryHolderId))));
+                        .orElseGet(() ->
+                                Mono.error(new CustomerNotFoundException(primaryHolderId))));
     }
 
     /** Solo aplica en create(): FIXED_TERM exige allowedMovementDay, no es editable despues. */
@@ -182,7 +204,10 @@ public class AccountServiceImpl implements AccountService {
      * en update() (si cambian los holders, se vuelven a validar contra el accountType existente).
      */
     private Mono<Void> validateHolderStructure(
-            AccountType accountType, List<String> holders, List<String> signers, CustomerType customerType) {
+            AccountType accountType,
+            List<String> holders,
+            List<String> signers,
+            CustomerType customerType) {
         return Mono.defer(() -> {
             if (customerType == CustomerType.PERSONAL) {
                 if (holders.size() != 1) {
@@ -206,15 +231,20 @@ public class AccountServiceImpl implements AccountService {
      * update() es el id de la propia cuenta, para no autobloquearse contra si misma.
      */
     private Mono<Void> validateTypeUniqueness(
-            String customerId, AccountType accountType, CustomerType customerType, String excludeAccountId) {
+            String customerId,
+            AccountType accountType,
+            CustomerType customerType,
+            String excludeAccountId) {
         if (customerType != CustomerType.PERSONAL) {
             return Mono.empty();
         }
         Mono<Boolean> existsMono = excludeAccountId == null
                 ? accountRepository.existsByHoldersAndAccountType(customerId, accountType)
-                : accountRepository.existsByHoldersAndAccountTypeAndIdNot(customerId, accountType, excludeAccountId);
+                : accountRepository.existsByHoldersAndAccountTypeAndIdNot(
+                        customerId, accountType, excludeAccountId);
         return existsMono.flatMap(exists -> exists
-                ? Mono.<Void>error(new InvalidBusinessRuleException("El cliente ya tiene una cuenta de tipo " + accountType))
+                ? Mono.<Void>error(new InvalidBusinessRuleException(
+                        "El cliente ya tiene una cuenta de tipo " + accountType))
                 : Mono.empty());
     }
 
@@ -226,7 +256,8 @@ public class AccountServiceImpl implements AccountService {
         }
         return findExistingMovement(idempotencyKey)
                 .map(MovementMapper::toResponse)
-                .switchIfEmpty(Mono.defer(() -> executeMovement(accountId, request, idempotencyKey, type)));
+                .switchIfEmpty(Mono.defer(
+                        () -> executeMovement(accountId, request, idempotencyKey, type)));
     }
 
     private Mono<Movement> findExistingMovement(String idempotencyKey) {
@@ -240,27 +271,34 @@ public class AccountServiceImpl implements AccountService {
             String accountId, MovementRequest request, String idempotencyKey, MovementType type) {
         return findEntityById(accountId)
                 .flatMap(account -> validateMovementRules(account, type)
-                        .then(Mono.defer(() -> applyBalanceChange(accountId, request.amount(), type))))
-                .flatMap(updatedAccount -> recordMovement(updatedAccount, type, request.amount(), idempotencyKey))
-                .doOnNext(movement -> log.info("Movimiento {} registrado accountId={}", type, accountId))
+                        .then(Mono.defer(() ->
+                                applyBalanceChange(accountId, request.amount(), type))))
+                .flatMap(updatedAccount -> recordMovement(
+                        updatedAccount, type, request.amount(), idempotencyKey))
+                .doOnNext(movement -> log.info(
+                        "Movimiento {} registrado accountId={}", type, accountId))
                 .map(MovementMapper::toResponse);
     }
 
-    /** SAVINGS: limite mensual configurable. FIXED_TERM: solo el dia pactado, 1 vez por mes. CHECKING: sin limite en Fase 1. */
+    /** SAVINGS: limite mensual configurable. FIXED_TERM: solo el dia pactado, 1 vez por mes.
+     * CHECKING: sin limite en Fase 1. */
     private Mono<Void> validateMovementRules(Account account, MovementType type) {
         Instant now = Instant.now();
         if (account.getAccountType() == AccountType.SAVINGS) {
             return countMovementsThisMonth(account.getId(), now)
                     .flatMap(count -> count >= maxMonthlySavingsMovements
                             ? Mono.<Void>error(new InvalidBusinessRuleException(
-                                    "La cuenta de ahorro alcanzo el limite de " + maxMonthlySavingsMovements
+                                    "La cuenta de ahorro alcanzo el limite de "
+                                            + maxMonthlySavingsMovements
                                             + " movimientos mensuales"))
                             : Mono.empty());
         }
         if (account.getAccountType() == AccountType.FIXED_TERM) {
             return Mono.defer(() -> {
                 int today = LocalDate.ofInstant(now, ZoneOffset.UTC).getDayOfMonth();
-                if (account.getAllowedMovementDay() == null || today != account.getAllowedMovementDay()) {
+                boolean wrongDay = account.getAllowedMovementDay() == null
+                        || today != account.getAllowedMovementDay();
+                if (wrongDay) {
                     return Mono.<Void>error(new InvalidBusinessRuleException(
                             "La cuenta a plazo fijo solo admite movimientos el dia "
                                     + account.getAllowedMovementDay() + " del mes"));
@@ -278,7 +316,8 @@ public class AccountServiceImpl implements AccountService {
     private Mono<Long> countMovementsThisMonth(String accountId, Instant now) {
         LocalDate today = LocalDate.ofInstant(now, ZoneOffset.UTC);
         Instant start = today.withDayOfMonth(1).atStartOfDay(ZoneOffset.UTC).toInstant();
-        Instant end = today.withDayOfMonth(1).plusMonths(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        Instant end = today.withDayOfMonth(1).plusMonths(1)
+                .atStartOfDay(ZoneOffset.UTC).toInstant();
         return movementRepository.countByAccountIdAndTimestampBetween(accountId, start, end);
     }
 
@@ -287,7 +326,8 @@ public class AccountServiceImpl implements AccountService {
      * concurrentes dejarian la cuenta en negativo, el segundo simplemente no encuentra el
      * documento (no hay lectura+escritura separada que pueda pisarse).
      */
-    private Mono<Account> applyBalanceChange(String accountId, BigDecimal amount, MovementType type) {
+    private Mono<Account> applyBalanceChange(
+            String accountId, BigDecimal amount, MovementType type) {
         BigDecimal delta = type == MovementType.DEPOSIT ? amount : amount.negate();
         Query query = Query.query(Criteria.where("_id").is(accountId));
         if (type == MovementType.WITHDRAWAL) {
@@ -295,13 +335,16 @@ public class AccountServiceImpl implements AccountService {
         }
         Update update = new Update().inc("balance", delta).currentDate("updatedAt");
         return mongoTemplate
-                .findAndModify(query, update, FindAndModifyOptions.options().returnNew(true), Account.class)
+                .findAndModify(
+                        query, update,
+                        FindAndModifyOptions.options().returnNew(true), Account.class)
                 .switchIfEmpty(Mono.defer(() -> type == MovementType.WITHDRAWAL
                         ? Mono.error(new InsufficientFundsException(accountId))
                         : Mono.error(new AccountNotFoundException(accountId))));
     }
 
-    private Mono<Movement> recordMovement(Account account, MovementType type, BigDecimal amount, String idempotencyKey) {
+    private Mono<Movement> recordMovement(
+            Account account, MovementType type, BigDecimal amount, String idempotencyKey) {
         Movement movement = Movement.builder()
                 .accountId(account.getId())
                 .type(type)

@@ -49,7 +49,8 @@ public class AccountController {
     }
 
     @PutMapping("/{id}")
-    public Mono<AccountResponse> update(@PathVariable String id, @Valid @RequestBody AccountUpdateRequest request) {
+    public Mono<AccountResponse> update(
+            @PathVariable String id, @Valid @RequestBody AccountUpdateRequest request) {
         return accountService.update(id, request);
     }
 

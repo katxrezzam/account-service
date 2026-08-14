@@ -4,6 +4,7 @@ import com.bootcamp.accountservice.model.MovementType;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+/** DTO de salida de un movimiento (deposito/retiro). */
 public record MovementResponse(
         String id,
         String accountId,

@@ -5,6 +5,7 @@ import com.bootcamp.accountservice.model.AccountType;
 import org.springframework.data.mongodb.repository.ReactiveMongoRepository;
 import reactor.core.publisher.Mono;
 
+/** Repositorio reactivo de {@link Account}. */
 public interface AccountRepository extends ReactiveMongoRepository<Account, String> {
 
     /**
@@ -16,5 +17,6 @@ public interface AccountRepository extends ReactiveMongoRepository<Account, Stri
 
     /** Misma idea, pero excluyendo una cuenta puntual - usado en update() para no autobloquear
      * la cuenta que se esta editando contra si misma. */
-    Mono<Boolean> existsByHoldersAndAccountTypeAndIdNot(String customerId, AccountType accountType, String excludedId);
+    Mono<Boolean> existsByHoldersAndAccountTypeAndIdNot(
+            String customerId, AccountType accountType, String excludedId);
 }

@@ -27,12 +27,15 @@ public class CustomerClient {
     private final WebClient webClient;
     private final ReactiveCircuitBreaker circuitBreaker;
 
-    public CustomerClient(WebClient customerServiceWebClient, ReactiveCircuitBreakerFactory circuitBreakerFactory) {
+    public CustomerClient(
+            WebClient customerServiceWebClient,
+            ReactiveCircuitBreakerFactory circuitBreakerFactory) {
         this.webClient = customerServiceWebClient;
         this.circuitBreaker = circuitBreakerFactory.create(CIRCUIT_BREAKER_ID);
     }
 
-    /** Trae el cliente por id. Emite CustomerNotFoundException (404) o CustomerServiceUnavailableException (circuito abierto/timeout/otro error). */
+    /** Trae el cliente por id. Emite CustomerNotFoundException (404) o
+     * CustomerServiceUnavailableException (circuito abierto/timeout/otro error). */
     public Mono<CustomerInfo> getCustomer(String customerId) {
         Mono<CustomerInfo> call = webClient.get()
                 .uri("/customers/{id}", customerId)
