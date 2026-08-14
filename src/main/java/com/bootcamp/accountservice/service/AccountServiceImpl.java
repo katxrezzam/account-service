@@ -1,6 +1,7 @@
 package com.bootcamp.accountservice.service;
 
 import com.bootcamp.accountservice.client.CardClient;
+import com.bootcamp.accountservice.client.CreditClient;
 import com.bootcamp.accountservice.client.CustomerClient;
 import com.bootcamp.accountservice.dto.AccountMapper;
 import com.bootcamp.accountservice.dto.AccountRequest;
@@ -59,6 +60,7 @@ public class AccountServiceImpl implements AccountService {
     private final ReactiveMongoTemplate mongoTemplate;
     private final CustomerClient customerClient;
     private final CardClient cardClient;
+    private final CreditClient creditClient;
     private final AccountFeeService accountFeeService;
     private final int movementsFreeMonthlyLimit;
     private final BigDecimal movementsExcessFee;
@@ -71,6 +73,7 @@ public class AccountServiceImpl implements AccountService {
             ReactiveMongoTemplate mongoTemplate,
             CustomerClient customerClient,
             CardClient cardClient,
+            CreditClient creditClient,
             AccountFeeService accountFeeService,
             @Value("${bank.accounts.movements.free-monthly-limit}")
             int movementsFreeMonthlyLimit,
@@ -81,6 +84,7 @@ public class AccountServiceImpl implements AccountService {
         this.mongoTemplate = mongoTemplate;
         this.customerClient = customerClient;
         this.cardClient = cardClient;
+        this.creditClient = creditClient;
         this.accountFeeService = accountFeeService;
         this.movementsFreeMonthlyLimit = movementsFreeMonthlyLimit;
         this.movementsExcessFee = movementsExcessFee;
@@ -109,7 +113,9 @@ public class AccountServiceImpl implements AccountService {
                                 request.holders().get(0),
                                 request.accountType(),
                                 primaryHolderInfo.customerType(),
-                                null))))
+                                null)))
+                        .then(Mono.defer(() ->
+                                validateNoOverdueDebt(request.holders().get(0)))))
                 .then(Mono.defer(() ->
                         accountRepository.save(AccountMapper.toEntity(request, profile))))
                 .doOnNext(saved -> log.info("Cuenta creada id={} accountType={} profile={}",
@@ -154,6 +160,20 @@ public class AccountServiceImpl implements AccountService {
                                     "El perfil " + profile + " requiere que el cliente ya tenga "
                                             + "una tarjeta de credito con el banco")));
         });
+    }
+
+    /**
+     * Bloquea el alta de una cuenta si el titular principal tiene deuda vencida en cualquier
+     * credito (D8, Fase III: "no podra adquirir un producto"). Se valida solo contra el titular
+     * principal, mismo criterio ya usado en {@link #validateProfileRequirements}.
+     */
+    private Mono<Void> validateNoOverdueDebt(String primaryHolderId) {
+        return creditClient.hasOverdueDebt(primaryHolderId)
+                .flatMap(overdue -> overdue
+                        ? Mono.<Void>error(new InvalidBusinessRuleException(
+                                "El cliente tiene una deuda vencida y no puede adquirir "
+                                        + "productos nuevos"))
+                        : Mono.empty());
     }
 
     @Override

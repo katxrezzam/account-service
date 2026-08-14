@@ -48,6 +48,13 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), exchange);
     }
 
+    @ExceptionHandler(CreditServiceUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleCreditServiceUnavailable(
+            CreditServiceUnavailableException ex, ServerWebExchange exchange) {
+        log.error("credit-service no disponible, correlationId={}", correlationId(exchange), ex);
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), exchange);
+    }
+
     @ExceptionHandler(InvalidBusinessRuleException.class)
     public ResponseEntity<ErrorResponse> handleInvalidRule(
             InvalidBusinessRuleException ex, ServerWebExchange exchange) {

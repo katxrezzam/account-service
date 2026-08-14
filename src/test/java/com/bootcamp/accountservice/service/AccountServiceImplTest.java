@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.bootcamp.accountservice.client.CardClient;
+import com.bootcamp.accountservice.client.CreditClient;
 import com.bootcamp.accountservice.client.CustomerClient;
 import com.bootcamp.accountservice.dto.AccountRequest;
 import com.bootcamp.accountservice.dto.CustomerInfo;
@@ -55,6 +56,8 @@ class AccountServiceImplTest {
     @Mock
     private CardClient cardClient;
     @Mock
+    private CreditClient creditClient;
+    @Mock
     private AccountFeeService accountFeeService;
 
     private AccountServiceImpl service;
@@ -65,7 +68,7 @@ class AccountServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new AccountServiceImpl(accountRepository, movementRepository, mongoTemplate,
-                customerClient, cardClient, accountFeeService, MAX_MONTHLY_SAVINGS, EXCESS_FEE);
+                customerClient, cardClient, creditClient, accountFeeService, MAX_MONTHLY_SAVINGS, EXCESS_FEE);
     }
 
     private Account savingsAccount() {
@@ -88,6 +91,7 @@ class AccountServiceImplTest {
         AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
         when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
         when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(false));
+        when(creditClient.hasOverdueDebt("cust1")).thenReturn(Mono.just(false));
         when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(savingsAccount()));
 
         StepVerifier.create(service.create(request))
@@ -135,6 +139,7 @@ class AccountServiceImplTest {
         when(customerClient.getCustomer("bus1")).thenReturn(Mono.just(new CustomerInfo("bus1", CustomerType.BUSINESS)));
         when(customerClient.getCustomer("bus2")).thenReturn(Mono.just(new CustomerInfo("bus2", CustomerType.BUSINESS)));
         when(customerClient.getCustomer("signer1")).thenReturn(Mono.just(new CustomerInfo("signer1", CustomerType.PERSONAL)));
+        when(creditClient.hasOverdueDebt("bus1")).thenReturn(Mono.just(false));
         when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(saved));
 
         StepVerifier.create(service.create(request))
@@ -173,6 +178,7 @@ class AccountServiceImplTest {
         when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
         when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(false));
         when(cardClient.hasCreditCard("cust1")).thenReturn(Mono.just(true));
+        when(creditClient.hasOverdueDebt("cust1")).thenReturn(Mono.just(false));
         when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(saved));
 
         StepVerifier.create(service.create(request))
@@ -207,6 +213,7 @@ class AccountServiceImplTest {
         Account saved = Account.builder().id("acc-pyme").accountType(AccountType.CHECKING).profile(AccountProfile.PYME).holders(List.of("bus1")).signers(List.of()).balance(BigDecimal.ZERO).build();
         when(customerClient.getCustomer("bus1")).thenReturn(Mono.just(new CustomerInfo("bus1", CustomerType.BUSINESS)));
         when(cardClient.hasCreditCard("bus1")).thenReturn(Mono.just(true));
+        when(creditClient.hasOverdueDebt("bus1")).thenReturn(Mono.just(false));
         when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(saved));
 
         StepVerifier.create(service.create(request))
@@ -222,6 +229,38 @@ class AccountServiceImplTest {
         StepVerifier.create(service.create(request))
                 .expectError(InvalidBusinessRuleException.class)
                 .verify();
+    }
+
+    // ---------- create: deuda vencida (D8, Fase III) ----------
+
+    @Test
+    void create_conDeudaVencida_falla() {
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
+        when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
+        when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(false));
+        when(creditClient.hasOverdueDebt("cust1")).thenReturn(Mono.just(true));
+
+        StepVerifier.create(service.create(request))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+
+        verify(accountRepository, never()).save(any());
+    }
+
+    @Test
+    void create_creditServiceCaido_propagaError() {
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
+        when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
+        when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(false));
+        when(creditClient.hasOverdueDebt("cust1")).thenReturn(Mono.error(
+                new com.bootcamp.accountservice.exception.CreditServiceUnavailableException(
+                        "cust1", new RuntimeException("timeout"))));
+
+        StepVerifier.create(service.create(request))
+                .expectError(com.bootcamp.accountservice.exception.CreditServiceUnavailableException.class)
+                .verify();
+
+        verify(accountRepository, never()).save(any());
     }
 
     // ---------- update ----------
