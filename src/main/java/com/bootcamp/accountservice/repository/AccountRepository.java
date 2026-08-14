@@ -29,4 +29,8 @@ public interface AccountRepository extends ReactiveMongoRepository<Account, Stri
     /** Usado por el job mensual de comision de mantenimiento: todas las CHECKING salvo las
      * PYME, que estan exentas (D8). */
     Flux<Account> findByAccountTypeAndProfileNot(AccountType accountType, AccountProfile profile);
+
+    /** Cuentas de un cliente (holders contiene customerId) - usado por report-service via
+     * GET /accounts?holderId= para el reporte general por cliente. */
+    Flux<Account> findByHoldersContaining(String customerId);
 }

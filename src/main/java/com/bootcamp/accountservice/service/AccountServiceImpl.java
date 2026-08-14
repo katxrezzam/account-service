@@ -157,8 +157,11 @@ public class AccountServiceImpl implements AccountService {
     }
 
     @Override
-    public Flux<AccountResponse> findAll() {
-        return accountRepository.findAll().map(AccountMapper::toResponse);
+    public Flux<AccountResponse> findAll(String holderId) {
+        Flux<Account> accounts = holderId == null || holderId.isBlank()
+                ? accountRepository.findAll()
+                : accountRepository.findByHoldersContaining(holderId);
+        return accounts.map(AccountMapper::toResponse);
     }
 
     @Override
@@ -206,9 +209,14 @@ public class AccountServiceImpl implements AccountService {
     }
 
     @Override
-    public Flux<MovementResponse> findMovements(String accountId) {
+    public Flux<MovementResponse> findMovements(String accountId, Instant from, Instant to) {
         return findEntityById(accountId)
-                .flatMapMany(account -> movementRepository.findByAccountId(accountId))
+                .flatMapMany(account -> from == null && to == null
+                        ? movementRepository.findByAccountId(accountId)
+                        : movementRepository.findByAccountIdAndTimestampBetween(
+                                accountId,
+                                from != null ? from : Instant.EPOCH,
+                                to != null ? to : Instant.now()))
                 .map(MovementMapper::toResponse);
     }
 

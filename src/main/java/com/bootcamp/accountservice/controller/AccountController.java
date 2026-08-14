@@ -9,6 +9,7 @@ import com.bootcamp.accountservice.dto.TransferRequest;
 import com.bootcamp.accountservice.dto.TransferResponse;
 import com.bootcamp.accountservice.service.AccountService;
 import jakarta.validation.Valid;
+import java.time.Instant;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
@@ -41,8 +43,9 @@ public class AccountController {
     }
 
     @GetMapping
-    public Flux<AccountResponse> findAll() {
-        return accountService.findAll();
+    public Flux<AccountResponse> findAll(
+            @RequestParam(required = false) String holderId) {
+        return accountService.findAll(holderId);
     }
 
     @GetMapping("/{id}")
@@ -63,8 +66,11 @@ public class AccountController {
     }
 
     @GetMapping("/{id}/movements")
-    public Flux<MovementResponse> findMovements(@PathVariable String id) {
-        return accountService.findMovements(id);
+    public Flux<MovementResponse> findMovements(
+            @PathVariable String id,
+            @RequestParam(required = false) Instant from,
+            @RequestParam(required = false) Instant to) {
+        return accountService.findMovements(id, from, to);
     }
 
     @PostMapping("/{id}/deposits")

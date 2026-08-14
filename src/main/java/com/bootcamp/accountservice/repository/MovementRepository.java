@@ -11,6 +11,10 @@ public interface MovementRepository extends ReactiveMongoRepository<Movement, St
 
     Flux<Movement> findByAccountId(String accountId);
 
+    /** Usado por report-service (via GET /accounts/{id}/movements?from=&to=) para el reporte
+     * general por cliente en un intervalo. */
+    Flux<Movement> findByAccountIdAndTimestampBetween(String accountId, Instant start, Instant end);
+
     /** Cuenta movimientos del mes en curso, usado para el limite mensual de ahorro y el "un
      * movimiento por mes" de plazo fijo. */
     Mono<Long> countByAccountIdAndTimestampBetween(String accountId, Instant start, Instant end);

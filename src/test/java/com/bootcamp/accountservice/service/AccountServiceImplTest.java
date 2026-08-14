@@ -277,6 +277,31 @@ class AccountServiceImplTest {
                 .verify();
     }
 
+    // ---------- findAll ----------
+
+    @Test
+    void findAll_sinHolderId_devuelveTodas() {
+        when(accountRepository.findAll()).thenReturn(Flux.just(savingsAccount()));
+
+        StepVerifier.create(service.findAll(null))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        verify(accountRepository, never()).findByHoldersContaining(anyString());
+    }
+
+    @Test
+    void findAll_conHolderId_filtraPorCliente() {
+        when(accountRepository.findByHoldersContaining("cust1"))
+                .thenReturn(Flux.just(savingsAccount()));
+
+        StepVerifier.create(service.findAll("cust1"))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        verify(accountRepository, never()).findAll();
+    }
+
     // ---------- findById / delete ----------
 
     @Test
@@ -438,9 +463,26 @@ class AccountServiceImplTest {
                 .amount(BigDecimal.TEN).balanceAfter(new BigDecimal("110")).timestamp(Instant.now()).build();
         when(movementRepository.findByAccountId("acc1")).thenReturn(Flux.just(m));
 
-        StepVerifier.create(service.findMovements("acc1"))
+        StepVerifier.create(service.findMovements("acc1", null, null))
                 .expectNextCount(1)
                 .verifyComplete();
+    }
+
+    @Test
+    void findMovements_conRangoDeFechas_filtraPorIntervalo() {
+        when(accountRepository.findById("acc1")).thenReturn(Mono.just(savingsAccount()));
+        Movement m = Movement.builder().id("mv1").accountId("acc1").type(MovementType.DEPOSIT)
+                .amount(BigDecimal.TEN).balanceAfter(new BigDecimal("110")).timestamp(Instant.now()).build();
+        Instant from = Instant.now().minusSeconds(3600);
+        Instant to = Instant.now();
+        when(movementRepository.findByAccountIdAndTimestampBetween("acc1", from, to))
+                .thenReturn(Flux.just(m));
+
+        StepVerifier.create(service.findMovements("acc1", from, to))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        verify(movementRepository, never()).findByAccountId(anyString());
     }
 
     // ---------- transfer ----------

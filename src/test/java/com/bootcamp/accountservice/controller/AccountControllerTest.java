@@ -99,7 +99,8 @@ class AccountControllerTest {
 
     @Test
     void getAll_retorna200() {
-        when(accountService.findAll()).thenReturn(reactor.core.publisher.Flux.just(sampleResponse()));
+        when(accountService.findAll(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(reactor.core.publisher.Flux.just(sampleResponse()));
 
         webTestClient.get().uri("/accounts")
                 .exchange()
