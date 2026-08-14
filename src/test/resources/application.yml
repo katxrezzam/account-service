@@ -9,6 +9,10 @@ spring:
       import-check:
         enabled: false
 
+eureka:
+  client:
+    enabled: false
+
 customer-service:
   base-url: http://localhost:8081
 
