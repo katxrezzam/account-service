@@ -1,6 +1,13 @@
 spring:
   application:
     name: account-service
+  # spring-cloud-starter-config exige spring.config.import por defecto (falla rapido si falta).
+  # En tests no debe depender de que config-server este levantado, asi que se desactiva ese
+  # chequeo puntual (leccion de customer-service, ver CONVENTIONS.md).
+  cloud:
+    config:
+      import-check:
+        enabled: false
 
 customer-service:
   base-url: http://localhost:8081
