@@ -1,8 +1,10 @@
 package com.bootcamp.accountservice.repository;
 
 import com.bootcamp.accountservice.model.Account;
+import com.bootcamp.accountservice.model.AccountProfile;
 import com.bootcamp.accountservice.model.AccountType;
 import org.springframework.data.mongodb.repository.ReactiveMongoRepository;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /** Repositorio reactivo de {@link Account}. */
@@ -19,4 +21,12 @@ public interface AccountRepository extends ReactiveMongoRepository<Account, Stri
      * la cuenta que se esta editando contra si misma. */
     Mono<Boolean> existsByHoldersAndAccountTypeAndIdNot(
             String customerId, AccountType accountType, String excludedId);
+
+    /** Usado por el job diario de snapshot y el job mensual de evaluacion VIP
+     * (ver AccountBillingJobs). */
+    Flux<Account> findByProfile(AccountProfile profile);
+
+    /** Usado por el job mensual de comision de mantenimiento: todas las CHECKING salvo las
+     * PYME, que estan exentas (D8). */
+    Flux<Account> findByAccountTypeAndProfileNot(AccountType accountType, AccountProfile profile);
 }

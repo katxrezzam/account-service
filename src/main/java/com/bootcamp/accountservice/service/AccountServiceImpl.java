@@ -1,5 +1,6 @@
 package com.bootcamp.accountservice.service;
 
+import com.bootcamp.accountservice.client.CardClient;
 import com.bootcamp.accountservice.client.CustomerClient;
 import com.bootcamp.accountservice.dto.AccountMapper;
 import com.bootcamp.accountservice.dto.AccountRequest;
@@ -14,6 +15,7 @@ import com.bootcamp.accountservice.exception.CustomerNotFoundException;
 import com.bootcamp.accountservice.exception.InsufficientFundsException;
 import com.bootcamp.accountservice.exception.InvalidBusinessRuleException;
 import com.bootcamp.accountservice.model.Account;
+import com.bootcamp.accountservice.model.AccountProfile;
 import com.bootcamp.accountservice.model.AccountType;
 import com.bootcamp.accountservice.model.CustomerType;
 import com.bootcamp.accountservice.model.Movement;
@@ -54,25 +56,37 @@ public class AccountServiceImpl implements AccountService {
     private final MovementRepository movementRepository;
     private final ReactiveMongoTemplate mongoTemplate;
     private final CustomerClient customerClient;
-    private final int maxMonthlySavingsMovements;
+    private final CardClient cardClient;
+    private final AccountFeeService accountFeeService;
+    private final int movementsFreeMonthlyLimit;
+    private final BigDecimal movementsExcessFee;
 
-    /** Inyeccion por constructor; maxMonthlySavingsMovements viene de la config externalizada. */
+    /** Inyeccion por constructor; los limites/montos de comisiones vienen de la config
+     * externalizada (D8: ninguno esta en el enunciado, son parametros de negocio). */
     public AccountServiceImpl(
             AccountRepository accountRepository,
             MovementRepository movementRepository,
             ReactiveMongoTemplate mongoTemplate,
             CustomerClient customerClient,
-            @Value("${bank.accounts.savings.max-monthly-movements}")
-            int maxMonthlySavingsMovements) {
+            CardClient cardClient,
+            AccountFeeService accountFeeService,
+            @Value("${bank.accounts.movements.free-monthly-limit}")
+            int movementsFreeMonthlyLimit,
+            @Value("${bank.accounts.movements.excess-fee}")
+            BigDecimal movementsExcessFee) {
         this.accountRepository = accountRepository;
         this.movementRepository = movementRepository;
         this.mongoTemplate = mongoTemplate;
         this.customerClient = customerClient;
-        this.maxMonthlySavingsMovements = maxMonthlySavingsMovements;
+        this.cardClient = cardClient;
+        this.accountFeeService = accountFeeService;
+        this.movementsFreeMonthlyLimit = movementsFreeMonthlyLimit;
+        this.movementsExcessFee = movementsExcessFee;
     }
 
     @Override
     public Mono<AccountResponse> create(AccountRequest request) {
+        AccountProfile profile = resolveProfile(request.profile());
         return validateHoldersAndSigners(request.holders(), request.signers())
                 .flatMap(primaryHolderInfo -> validateFixedTermDay(
                                 request.accountType(), request.allowedMovementDay())
@@ -81,15 +95,63 @@ public class AccountServiceImpl implements AccountService {
                                 request.holders(),
                                 request.signers(),
                                 primaryHolderInfo.customerType()))
+                        // profile antes de type-uniqueness: es una validacion local (sin I/O
+                        // salvo el chequeo de tarjeta), tiene sentido descartar una combinacion
+                        // invalida antes de pagar una consulta a Mongo.
+                        .then(Mono.defer(() -> validateProfileRequirements(
+                                request.accountType(),
+                                profile,
+                                primaryHolderInfo.customerType(),
+                                request.holders().get(0))))
                         .then(Mono.defer(() -> validateTypeUniqueness(
                                 request.holders().get(0),
                                 request.accountType(),
                                 primaryHolderInfo.customerType(),
                                 null))))
-                .then(Mono.defer(() -> accountRepository.save(AccountMapper.toEntity(request))))
-                .doOnNext(saved -> log.info("Cuenta creada id={} accountType={}",
-                        saved.getId(), saved.getAccountType()))
+                .then(Mono.defer(() ->
+                        accountRepository.save(AccountMapper.toEntity(request, profile))))
+                .doOnNext(saved -> log.info("Cuenta creada id={} accountType={} profile={}",
+                        saved.getId(), saved.getAccountType(), saved.getProfile()))
                 .map(AccountMapper::toResponse);
+    }
+
+    private AccountProfile resolveProfile(AccountProfile requested) {
+        return requested != null ? requested : AccountProfile.STANDARD;
+    }
+
+    /**
+     * VIP solo aplica a SAVINGS de clientes personales; PYME solo a CHECKING de clientes
+     * empresariales (D8). Ambos exigen que el cliente ya tenga una tarjeta de credito con el
+     * banco al momento de la creacion (D5) - se valida contra card-service via CardClient, mismo
+     * patron de circuit breaker + timeout que CustomerClient.
+     */
+    private Mono<Void> validateProfileRequirements(
+            AccountType accountType,
+            AccountProfile profile,
+            CustomerType customerType,
+            String primaryHolderId) {
+        return Mono.defer(() -> {
+            if (profile == AccountProfile.VIP && accountType != AccountType.SAVINGS) {
+                return Mono.error(new InvalidBusinessRuleException(
+                        "El perfil VIP solo aplica a cuentas de ahorro"));
+            }
+            if (profile == AccountProfile.PYME
+                    && (accountType != AccountType.CHECKING
+                            || customerType != CustomerType.BUSINESS)) {
+                return Mono.error(new InvalidBusinessRuleException(
+                        "El perfil PYME solo aplica a cuentas corrientes de clientes "
+                                + "empresariales"));
+            }
+            if (profile == AccountProfile.STANDARD) {
+                return Mono.empty();
+            }
+            return cardClient.hasCreditCard(primaryHolderId)
+                    .flatMap(hasCard -> hasCard
+                            ? Mono.<Void>empty()
+                            : Mono.error(new InvalidBusinessRuleException(
+                                    "El perfil " + profile + " requiere que el cliente ya tenga "
+                                            + "una tarjeta de credito con el banco")));
+        });
     }
 
     @Override
@@ -270,47 +332,56 @@ public class AccountServiceImpl implements AccountService {
     private Mono<MovementResponse> executeMovement(
             String accountId, MovementRequest request, String idempotencyKey, MovementType type) {
         return findEntityById(accountId)
-                .flatMap(account -> validateMovementRules(account, type)
-                        .then(Mono.defer(() ->
-                                applyBalanceChange(accountId, request.amount(), type))))
-                .flatMap(updatedAccount -> recordMovement(
-                        updatedAccount, type, request.amount(), idempotencyKey))
+                .flatMap(account -> resolveMovementRules(account)
+                        .flatMap(feeApplies -> applyBalanceChange(accountId, request.amount(), type)
+                                .flatMap(updatedAccount -> recordMovement(
+                                                updatedAccount, type, request.amount(),
+                                                idempotencyKey)
+                                        .flatMap(movement -> feeApplies
+                                                ? chargeExcessFee(accountId, idempotencyKey)
+                                                        .thenReturn(movement)
+                                                : Mono.just(movement)))))
                 .doOnNext(movement -> log.info(
                         "Movimiento {} registrado accountId={}", type, accountId))
                 .map(MovementMapper::toResponse);
     }
 
-    /** SAVINGS: limite mensual configurable. FIXED_TERM: solo el dia pactado, 1 vez por mes.
-     * CHECKING: sin limite en Fase 1. */
-    private Mono<Void> validateMovementRules(Account account, MovementType type) {
+    /**
+     * SAVINGS y CHECKING comparten el mismo mecanismo (D8, Parte II): hasta
+     * movementsFreeMonthlyLimit por mes sin comision; superado, el movimiento se permite igual
+     * pero se cobra bank.accounts.movements.excess-fee (devuelve true). FIXED_TERM no usa este
+     * mecanismo, sigue con su bloqueo duro de producto (1 movimiento/mes, dia pactado) - su
+     * propia regla ya es mas estricta que el limite de comision, nunca lo alcanzaria.
+     */
+    private Mono<Boolean> resolveMovementRules(Account account) {
         Instant now = Instant.now();
-        if (account.getAccountType() == AccountType.SAVINGS) {
-            return countMovementsThisMonth(account.getId(), now)
-                    .flatMap(count -> count >= maxMonthlySavingsMovements
-                            ? Mono.<Void>error(new InvalidBusinessRuleException(
-                                    "La cuenta de ahorro alcanzo el limite de "
-                                            + maxMonthlySavingsMovements
-                                            + " movimientos mensuales"))
-                            : Mono.empty());
-        }
         if (account.getAccountType() == AccountType.FIXED_TERM) {
             return Mono.defer(() -> {
                 int today = LocalDate.ofInstant(now, ZoneOffset.UTC).getDayOfMonth();
                 boolean wrongDay = account.getAllowedMovementDay() == null
                         || today != account.getAllowedMovementDay();
                 if (wrongDay) {
-                    return Mono.<Void>error(new InvalidBusinessRuleException(
+                    return Mono.<Boolean>error(new InvalidBusinessRuleException(
                             "La cuenta a plazo fijo solo admite movimientos el dia "
                                     + account.getAllowedMovementDay() + " del mes"));
                 }
                 return countMovementsThisMonth(account.getId(), now)
                         .flatMap(count -> count > 0
-                                ? Mono.<Void>error(new InvalidBusinessRuleException(
+                                ? Mono.<Boolean>error(new InvalidBusinessRuleException(
                                         "La cuenta a plazo fijo ya tuvo su movimiento de este mes"))
-                                : Mono.empty());
+                                : Mono.just(false));
             });
         }
-        return Mono.empty();
+        return countMovementsThisMonth(account.getId(), now)
+                .map(count -> count >= movementsFreeMonthlyLimit);
+    }
+
+    private Mono<Void> chargeExcessFee(String accountId, String idempotencyKey) {
+        return accountFeeService.chargeFee(
+                accountId,
+                movementsExcessFee,
+                idempotencyKey + ":excess-fee",
+                "Comision por exceso de movimientos mensuales");
     }
 
     private Mono<Long> countMovementsThisMonth(String accountId, Instant now) {

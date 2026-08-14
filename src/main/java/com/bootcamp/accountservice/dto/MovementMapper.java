@@ -16,6 +16,7 @@ public final class MovementMapper {
                 movement.getType(),
                 movement.getAmount(),
                 movement.getBalanceAfter(),
-                movement.getTimestamp());
+                movement.getTimestamp(),
+                movement.getDescription());
     }
 }

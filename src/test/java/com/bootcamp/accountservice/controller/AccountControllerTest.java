@@ -10,6 +10,7 @@ import com.bootcamp.accountservice.dto.MovementRequest;
 import com.bootcamp.accountservice.dto.MovementResponse;
 import com.bootcamp.accountservice.exception.AccountNotFoundException;
 import com.bootcamp.accountservice.exception.GlobalExceptionHandler;
+import com.bootcamp.accountservice.model.AccountProfile;
 import com.bootcamp.accountservice.model.AccountType;
 import com.bootcamp.accountservice.model.MovementType;
 import com.bootcamp.accountservice.service.AccountService;
@@ -36,15 +37,15 @@ class AccountControllerTest {
     private AccountService accountService;
 
     private AccountResponse sampleResponse() {
-        return new AccountResponse("acc1", AccountType.SAVINGS, List.of("cust1"), List.of(),
-                new BigDecimal("100.00"), null, Instant.now(), Instant.now());
+        return new AccountResponse("acc1", AccountType.SAVINGS, AccountProfile.STANDARD,
+                List.of("cust1"), List.of(), new BigDecimal("100.00"), null, Instant.now(), Instant.now());
     }
 
     @Test
     void post_requestValido_retorna201() {
         when(accountService.create(any(AccountRequest.class))).thenReturn(Mono.just(sampleResponse()));
 
-        AccountRequest request = new AccountRequest(AccountType.SAVINGS, List.of("cust1"), List.of(), new BigDecimal("100.00"), null);
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1"), List.of(), new BigDecimal("100.00"), null);
 
         webTestClient.post().uri("/accounts")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -82,7 +83,7 @@ class AccountControllerTest {
     @Test
     void deposit_conIdempotencyKey_retorna201() {
         MovementResponse response = new MovementResponse("mv1", "acc1", MovementType.DEPOSIT,
-                new BigDecimal("10"), new BigDecimal("110"), Instant.now());
+                new BigDecimal("10"), new BigDecimal("110"), Instant.now(), null);
         when(accountService.deposit(eq("acc1"), any(MovementRequest.class), eq("key-1")))
                 .thenReturn(Mono.just(response));
 

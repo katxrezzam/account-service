@@ -1,6 +1,7 @@
 package com.bootcamp.accountservice.dto;
 
 import com.bootcamp.accountservice.model.Account;
+import com.bootcamp.accountservice.model.AccountProfile;
 import java.math.BigDecimal;
 
 /** Mapeo manual entidad&lt;-&gt;DTO (mismo criterio que customer-service: sin MapStruct
@@ -10,12 +11,14 @@ public final class AccountMapper {
     private AccountMapper() {
     }
 
-    /** Arma una entidad nueva (sin id/auditoria) desde el request de creacion. */
-    public static Account toEntity(AccountRequest request) {
+    /** profile resuelto (nunca null: si el request no lo trae, ya vino default a STANDARD desde
+     * el service - ver AccountServiceImpl.resolveProfile) para no duplicar esa regla aca. */
+    public static Account toEntity(AccountRequest request, AccountProfile profile) {
         BigDecimal openingAmount = request.openingAmount() != null
                 ? request.openingAmount() : BigDecimal.ZERO;
         return Account.builder()
                 .accountType(request.accountType())
+                .profile(profile)
                 .holders(request.holders())
                 .signers(request.signers())
                 .balance(openingAmount)
@@ -28,6 +31,7 @@ public final class AccountMapper {
         return new AccountResponse(
                 account.getId(),
                 account.getAccountType(),
+                account.getProfile(),
                 account.getHolders(),
                 account.getSigners(),
                 account.getBalance(),

@@ -41,6 +41,13 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), exchange);
     }
 
+    @ExceptionHandler(CardServiceUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleCardServiceUnavailable(
+            CardServiceUnavailableException ex, ServerWebExchange exchange) {
+        log.error("card-service no disponible, correlationId={}", correlationId(exchange), ex);
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), exchange);
+    }
+
     @ExceptionHandler(InvalidBusinessRuleException.class)
     public ResponseEntity<ErrorResponse> handleInvalidRule(
             InvalidBusinessRuleException ex, ServerWebExchange exchange) {

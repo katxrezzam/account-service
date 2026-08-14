@@ -42,4 +42,8 @@ public class Movement {
     private String idempotencyKey;
 
     private String correlationId;
+
+    /** Solo se usa en movimientos tipo FEE, para dejar auditable el motivo del cobro (ej.
+     * "Comision por exceso de movimientos mensuales"). Null en DEPOSIT/WITHDRAWAL. */
+    private String description;
 }

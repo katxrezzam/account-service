@@ -1,5 +1,6 @@
 package com.bootcamp.accountservice.dto;
 
+import com.bootcamp.accountservice.model.AccountProfile;
 import com.bootcamp.accountservice.model.AccountType;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
@@ -16,9 +17,14 @@ import java.util.List;
  * de servicio, porque dependen de una llamada a customer-service y de una combinacion de campos.
  * Cada elemento de holders/signers se valida no-blank aca (constraint sobre el tipo del elemento
  * de la lista); que sea un customerId real se valida en el service contra customer-service.
+ *
+ * <p>{@link #profile} es opcional: si viene null, se asume {@link AccountProfile#STANDARD}. Si
+ * se pide VIP o PYME, el service valida la combinacion con accountType/customerType y el
+ * requisito de tarjeta de credito contra card-service (D5/D8) antes de crear la cuenta.
  */
 public record AccountRequest(
         @NotNull(message = "accountType es obligatorio") AccountType accountType,
+        AccountProfile profile,
         @NotEmpty(message = "holders debe tener al menos un customerId")
         List<@NotBlank(message = "cada holder debe ser un customerId no vacio") String> holders,
         List<@NotBlank(message = "cada signer debe ser un customerId no vacio") String> signers,

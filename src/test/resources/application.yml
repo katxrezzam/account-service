@@ -16,7 +16,17 @@ eureka:
 customer-service:
   base-url: http://localhost:8081
 
+card-service:
+  base-url: http://localhost:8084
+
 bank:
   accounts:
     savings:
-      max-monthly-movements: 5
+      vip:
+        min-daily-average: 500.00
+        avg-shortfall-fee: 15.00
+    checking:
+      maintenance-fee: 15.00
+    movements:
+      free-monthly-limit: 5
+      excess-fee: 5.00

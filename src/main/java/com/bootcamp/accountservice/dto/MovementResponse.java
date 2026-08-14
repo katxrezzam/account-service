@@ -11,5 +11,6 @@ public record MovementResponse(
         MovementType type,
         BigDecimal amount,
         BigDecimal balanceAfter,
-        Instant timestamp) {
+        Instant timestamp,
+        String description) {
 }

@@ -2,8 +2,12 @@ package com.bootcamp.accountservice.service;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.bootcamp.accountservice.client.CardClient;
 import com.bootcamp.accountservice.client.CustomerClient;
 import com.bootcamp.accountservice.dto.AccountRequest;
 import com.bootcamp.accountservice.dto.CustomerInfo;
@@ -12,6 +16,7 @@ import com.bootcamp.accountservice.exception.AccountNotFoundException;
 import com.bootcamp.accountservice.exception.InsufficientFundsException;
 import com.bootcamp.accountservice.exception.InvalidBusinessRuleException;
 import com.bootcamp.accountservice.model.Account;
+import com.bootcamp.accountservice.model.AccountProfile;
 import com.bootcamp.accountservice.model.AccountType;
 import com.bootcamp.accountservice.model.CustomerType;
 import com.bootcamp.accountservice.model.Movement;
@@ -45,20 +50,27 @@ class AccountServiceImplTest {
     private ReactiveMongoTemplate mongoTemplate;
     @Mock
     private CustomerClient customerClient;
+    @Mock
+    private CardClient cardClient;
+    @Mock
+    private AccountFeeService accountFeeService;
 
     private AccountServiceImpl service;
 
     private static final int MAX_MONTHLY_SAVINGS = 5;
+    private static final BigDecimal EXCESS_FEE = new BigDecimal("5.00");
 
     @BeforeEach
     void setUp() {
-        service = new AccountServiceImpl(accountRepository, movementRepository, mongoTemplate, customerClient, MAX_MONTHLY_SAVINGS);
+        service = new AccountServiceImpl(accountRepository, movementRepository, mongoTemplate,
+                customerClient, cardClient, accountFeeService, MAX_MONTHLY_SAVINGS, EXCESS_FEE);
     }
 
     private Account savingsAccount() {
         return Account.builder()
                 .id("acc1")
                 .accountType(AccountType.SAVINGS)
+                .profile(AccountProfile.STANDARD)
                 .holders(List.of("cust1"))
                 .signers(List.of())
                 .balance(new BigDecimal("100.00"))
@@ -71,7 +83,7 @@ class AccountServiceImplTest {
 
     @Test
     void create_personalValido_creaLaCuenta() {
-        AccountRequest request = new AccountRequest(AccountType.SAVINGS, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
         when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
         when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(false));
         when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(savingsAccount()));
@@ -83,7 +95,7 @@ class AccountServiceImplTest {
 
     @Test
     void create_personalYaTieneCuentaDeEseTipo_falla() {
-        AccountRequest request = new AccountRequest(AccountType.SAVINGS, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
         when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
         when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(true));
 
@@ -94,7 +106,7 @@ class AccountServiceImplTest {
 
     @Test
     void create_personalConMultiplesHolders_falla() {
-        AccountRequest request = new AccountRequest(AccountType.SAVINGS, List.of("cust1", "cust2"), List.of(), new BigDecimal("50.00"), null);
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("cust1", "cust2"), List.of(), new BigDecimal("50.00"), null);
         when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
         when(customerClient.getCustomer("cust2")).thenReturn(Mono.just(new CustomerInfo("cust2", CustomerType.PERSONAL)));
 
@@ -105,7 +117,7 @@ class AccountServiceImplTest {
 
     @Test
     void create_businessConCuentaAhorro_falla() {
-        AccountRequest request = new AccountRequest(AccountType.SAVINGS, List.of("bus1"), List.of(), new BigDecimal("50.00"), null);
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, null, List.of("bus1"), List.of(), new BigDecimal("50.00"), null);
         when(customerClient.getCustomer("bus1")).thenReturn(Mono.just(new CustomerInfo("bus1", CustomerType.BUSINESS)));
 
         StepVerifier.create(service.create(request))
@@ -115,8 +127,8 @@ class AccountServiceImplTest {
 
     @Test
     void create_businessConCorriente_creaLaCuenta() {
-        AccountRequest request = new AccountRequest(AccountType.CHECKING, List.of("bus1", "bus2"), List.of("signer1"), new BigDecimal("0"), null);
-        Account saved = Account.builder().id("acc2").accountType(AccountType.CHECKING).holders(List.of("bus1", "bus2")).signers(List.of("signer1")).balance(BigDecimal.ZERO).build();
+        AccountRequest request = new AccountRequest(AccountType.CHECKING, null, List.of("bus1", "bus2"), List.of("signer1"), new BigDecimal("0"), null);
+        Account saved = Account.builder().id("acc2").accountType(AccountType.CHECKING).profile(AccountProfile.STANDARD).holders(List.of("bus1", "bus2")).signers(List.of("signer1")).balance(BigDecimal.ZERO).build();
         // ahora se valida CADA holder y signer contra customer-service, no solo el primero
         when(customerClient.getCustomer("bus1")).thenReturn(Mono.just(new CustomerInfo("bus1", CustomerType.BUSINESS)));
         when(customerClient.getCustomer("bus2")).thenReturn(Mono.just(new CustomerInfo("bus2", CustomerType.BUSINESS)));
@@ -130,7 +142,7 @@ class AccountServiceImplTest {
 
     @Test
     void create_signerInexistente_falla() {
-        AccountRequest request = new AccountRequest(AccountType.CHECKING, List.of("bus1"), List.of("signer-fantasma"), new BigDecimal("0"), null);
+        AccountRequest request = new AccountRequest(AccountType.CHECKING, null, List.of("bus1"), List.of("signer-fantasma"), new BigDecimal("0"), null);
         when(customerClient.getCustomer("bus1")).thenReturn(Mono.just(new CustomerInfo("bus1", CustomerType.BUSINESS)));
         when(customerClient.getCustomer("signer-fantasma"))
                 .thenReturn(Mono.error(new com.bootcamp.accountservice.exception.CustomerNotFoundException("signer-fantasma")));
@@ -142,7 +154,67 @@ class AccountServiceImplTest {
 
     @Test
     void create_plazoFijoSinDia_falla() {
-        AccountRequest request = new AccountRequest(AccountType.FIXED_TERM, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
+        AccountRequest request = new AccountRequest(AccountType.FIXED_TERM, null, List.of("cust1"), List.of(), new BigDecimal("50.00"), null);
+        when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
+
+        StepVerifier.create(service.create(request))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    // ---------- create: perfiles VIP / PYME (D8) ----------
+
+    @Test
+    void create_vipConTarjeta_creaLaCuenta() {
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, AccountProfile.VIP, List.of("cust1"), List.of(), new BigDecimal("500.00"), null);
+        Account saved = Account.builder().id("acc-vip").accountType(AccountType.SAVINGS).profile(AccountProfile.VIP).holders(List.of("cust1")).signers(List.of()).balance(new BigDecimal("500.00")).build();
+        when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
+        when(accountRepository.existsByHoldersAndAccountType("cust1", AccountType.SAVINGS)).thenReturn(Mono.just(false));
+        when(cardClient.hasCreditCard("cust1")).thenReturn(Mono.just(true));
+        when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(saved));
+
+        StepVerifier.create(service.create(request))
+                .expectNextMatches(response -> response.profile() == AccountProfile.VIP)
+                .verifyComplete();
+    }
+
+    @Test
+    void create_vipSinTarjeta_falla() {
+        AccountRequest request = new AccountRequest(AccountType.SAVINGS, AccountProfile.VIP, List.of("cust1"), List.of(), new BigDecimal("500.00"), null);
+        when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
+        when(cardClient.hasCreditCard("cust1")).thenReturn(Mono.just(false));
+
+        StepVerifier.create(service.create(request))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    @Test
+    void create_vipEnCuentaCorriente_falla() {
+        AccountRequest request = new AccountRequest(AccountType.CHECKING, AccountProfile.VIP, List.of("cust1"), List.of(), new BigDecimal("500.00"), null);
+        when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
+
+        StepVerifier.create(service.create(request))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    @Test
+    void create_pymeEmpresarialConTarjeta_creaLaCuenta() {
+        AccountRequest request = new AccountRequest(AccountType.CHECKING, AccountProfile.PYME, List.of("bus1"), List.of(), new BigDecimal("0"), null);
+        Account saved = Account.builder().id("acc-pyme").accountType(AccountType.CHECKING).profile(AccountProfile.PYME).holders(List.of("bus1")).signers(List.of()).balance(BigDecimal.ZERO).build();
+        when(customerClient.getCustomer("bus1")).thenReturn(Mono.just(new CustomerInfo("bus1", CustomerType.BUSINESS)));
+        when(cardClient.hasCreditCard("bus1")).thenReturn(Mono.just(true));
+        when(accountRepository.save(any(Account.class))).thenReturn(Mono.just(saved));
+
+        StepVerifier.create(service.create(request))
+                .expectNextMatches(response -> response.profile() == AccountProfile.PYME)
+                .verifyComplete();
+    }
+
+    @Test
+    void create_pymeClientePersonal_falla() {
+        AccountRequest request = new AccountRequest(AccountType.CHECKING, AccountProfile.PYME, List.of("cust1"), List.of(), new BigDecimal("0"), null);
         when(customerClient.getCustomer("cust1")).thenReturn(Mono.just(new CustomerInfo("cust1", CustomerType.PERSONAL)));
 
         StepVerifier.create(service.create(request))
@@ -252,6 +324,8 @@ class AccountServiceImplTest {
         StepVerifier.create(service.deposit("acc1", new MovementRequest(new BigDecimal("10")), "key-1"))
                 .expectNextMatches(response -> "mv1".equals(response.id()))
                 .verifyComplete();
+
+        verify(accountFeeService, never()).chargeFee(anyString(), any(BigDecimal.class), anyString(), anyString());
     }
 
     @Test
@@ -289,19 +363,70 @@ class AccountServiceImplTest {
         StepVerifier.create(service.withdraw("acc1", new MovementRequest(new BigDecimal("10")), "key-3"))
                 .expectNextMatches(response -> "mv2".equals(response.id()) && response.balanceAfter().compareTo(new BigDecimal("90.00")) == 0)
                 .verifyComplete();
+
+        verify(accountFeeService, never()).chargeFee(anyString(), any(BigDecimal.class), anyString(), anyString());
     }
 
     @Test
-    void deposit_ahorroSuperaLimiteMensual_falla() {
+    void deposit_ahorroSuperaLimiteMensual_sePermiteYCobraComision() {
+        // D8 (2026-08-14): antes esto rechazaba el movimiento; ahora se permite y se cobra
+        // bank.accounts.movements.excess-fee (Parte II del enunciado).
         Account account = savingsAccount();
+        Account updated = savingsAccount();
+        updated.setBalance(new BigDecimal("110.00"));
+        Movement saved = Movement.builder().id("mv4").accountId("acc1").type(MovementType.DEPOSIT)
+                .amount(new BigDecimal("10")).balanceAfter(new BigDecimal("110.00")).timestamp(Instant.now())
+                .idempotencyKey("key-4").build();
+
         when(movementRepository.findByIdempotencyKey("key-4")).thenReturn(Mono.empty());
         when(accountRepository.findById("acc1")).thenReturn(Mono.just(account));
         when(movementRepository.countByAccountIdAndTimestampBetween(anyString(), any(Instant.class), any(Instant.class)))
                 .thenReturn(Mono.just((long) MAX_MONTHLY_SAVINGS));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), org.mockito.ArgumentMatchers.eq(Account.class)))
+                .thenReturn(Mono.just(updated));
+        when(movementRepository.save(any(Movement.class))).thenReturn(Mono.just(saved));
+        when(accountFeeService.chargeFee(anyString(), any(BigDecimal.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
 
         StepVerifier.create(service.deposit("acc1", new MovementRequest(new BigDecimal("10")), "key-4"))
-                .expectError(InvalidBusinessRuleException.class)
-                .verify();
+                .expectNextMatches(response -> "mv4".equals(response.id()))
+                .verifyComplete();
+
+        verify(accountFeeService, times(1))
+                .chargeFee("acc1", EXCESS_FEE, "key-4:excess-fee",
+                        "Comision por exceso de movimientos mensuales");
+    }
+
+    @Test
+    void deposit_checkingSuperaLimiteMensual_sePermiteYCobraComision() {
+        // Parte II amplio el mecanismo de comision a CHECKING (Fase 1 la dejaba "sin limite").
+        Account account = Account.builder().id("acc-chk").accountType(AccountType.CHECKING)
+                .profile(AccountProfile.STANDARD).holders(List.of("bus1")).signers(List.of())
+                .balance(new BigDecimal("1000.00")).build();
+        Account updated = Account.builder().id("acc-chk").accountType(AccountType.CHECKING)
+                .profile(AccountProfile.STANDARD).holders(List.of("bus1")).signers(List.of())
+                .balance(new BigDecimal("1010.00")).build();
+        Movement saved = Movement.builder().id("mv5").accountId("acc-chk").type(MovementType.DEPOSIT)
+                .amount(new BigDecimal("10")).balanceAfter(new BigDecimal("1010.00")).timestamp(Instant.now())
+                .idempotencyKey("key-5").build();
+
+        when(movementRepository.findByIdempotencyKey("key-5")).thenReturn(Mono.empty());
+        when(accountRepository.findById("acc-chk")).thenReturn(Mono.just(account));
+        when(movementRepository.countByAccountIdAndTimestampBetween(anyString(), any(Instant.class), any(Instant.class)))
+                .thenReturn(Mono.just((long) MAX_MONTHLY_SAVINGS));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class), any(FindAndModifyOptions.class), org.mockito.ArgumentMatchers.eq(Account.class)))
+                .thenReturn(Mono.just(updated));
+        when(movementRepository.save(any(Movement.class))).thenReturn(Mono.just(saved));
+        when(accountFeeService.chargeFee(anyString(), any(BigDecimal.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(service.deposit("acc-chk", new MovementRequest(new BigDecimal("10")), "key-5"))
+                .expectNextMatches(response -> "mv5".equals(response.id()))
+                .verifyComplete();
+
+        verify(accountFeeService, times(1))
+                .chargeFee("acc-chk", EXCESS_FEE, "key-5:excess-fee",
+                        "Comision por exceso de movimientos mensuales");
     }
 
     @Test

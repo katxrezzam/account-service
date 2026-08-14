@@ -22,6 +22,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * {@link AccountType#FIXED_TERM}. El {@link #balance} nunca se modifica con save() directo desde
  * el service: las operaciones de deposito/retiro usan un update atomico en Mongo (ver
  * AccountServiceImpl) para no perder actualizaciones bajo concurrencia.
+ *
+ * <p>{@link #profile} es {@link AccountProfile#STANDARD} salvo que la cuenta se haya creado como
+ * VIP o PYME (ver D8/CONVENTIONS.md); ambos exigen tarjeta de credito previa y habilitan
+ * comisiones/requisitos propios que no aplican a una cuenta estandar del mismo tipo.
  */
 @Document(collection = "accounts")
 @Getter
@@ -35,6 +39,9 @@ public class Account {
     private String id;
 
     private AccountType accountType;
+
+    @Builder.Default
+    private AccountProfile profile = AccountProfile.STANDARD;
 
     private List<String> holders;
 
