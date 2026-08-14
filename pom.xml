@@ -38,6 +38,17 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-config</artifactId>
         </dependency>
+        <!-- spring-retry + starter-aop: sin estos dos, spring.cloud.config.retry.enabled no
+             hace nada (el interceptor de reintentos no se teje) - version manejada por los BOM
+             heredados (spring-cloud-dependencies / spring-boot-starter-parent). -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aspectj</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>

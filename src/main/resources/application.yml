@@ -2,4 +2,20 @@ spring:
   application:
     name: account-service
   config:
-    import: "configserver:http://localhost:8888"
+    # sin URL en el import: la URL real va en spring.cloud.config.uri (propiedad normal, si se
+    # sobreescribe por variable de entorno en Docker - una URL embebida aca en el import mismo
+    # NO se sobreescribe limpio por env var, es un caso especial de la resolucion de imports).
+    import: "configserver:"
+  cloud:
+    config:
+      uri: http://localhost:8888
+      # Sin esto, si config-server no esta listo en el primer intento (tipico al arrancar todo
+      # junto en Docker), el servicio falla al arrancar en vez de reintentar. Estos valores
+      # tienen que vivir aca (local) y no en bootcamp-config-repo: rigen el intento de LLEGAR a
+      # config-server, todavia no se pudo leer nada remoto en ese momento.
+      retry:
+        enabled: true
+        max-attempts: 6
+        initial-interval: 1000
+        max-interval: 2000
+        multiplier: 1.5
