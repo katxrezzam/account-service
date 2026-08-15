@@ -524,6 +524,89 @@ class AccountServiceImplTest {
         verify(movementRepository, never()).findByAccountId(anyString());
     }
 
+    // ---------- reverseWithdrawal (hallazgo 8.7, PLAN-DE-ACCION.md) ----------
+
+    @Test
+    void reverseWithdrawal_sinIdempotencyKey_falla() {
+        StepVerifier.create(service.reverseWithdrawal(
+                        "acc1", new MovementRequest(new BigDecimal("10")), null, "key-out"))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+    }
+
+    @Test
+    void reverseWithdrawal_conClaveYaUsada_devuelveElMovimientoExistenteSinReaplicar() {
+        Movement existing = Movement.builder().id("mv1").accountId("acc1").type(MovementType.DEPOSIT)
+                .amount(new BigDecimal("10")).balanceAfter(new BigDecimal("110")).timestamp(Instant.now())
+                .idempotencyKey("key-rev-1").build();
+        when(movementRepository.findByIdempotencyKey("key-rev-1")).thenReturn(Mono.just(existing));
+
+        StepVerifier.create(service.reverseWithdrawal(
+                        "acc1", new MovementRequest(new BigDecimal("10")), "key-rev-1", "key-out"))
+                .expectNextMatches(response -> "mv1".equals(response.id()))
+                .verifyComplete();
+
+        verify(mongoTemplate, never()).findAndModify(any(Query.class), any(Update.class),
+                any(FindAndModifyOptions.class), org.mockito.ArgumentMatchers.eq(Account.class));
+    }
+
+    @Test
+    void reverseWithdrawal_sinComisionPrevia_acreditaSinCobrarNiConsultarElLimite() {
+        Account updated = savingsAccount();
+        updated.setBalance(new BigDecimal("110.00"));
+        Movement saved = Movement.builder().id("mv-rev").accountId("acc1").type(MovementType.DEPOSIT)
+                .amount(new BigDecimal("10")).balanceAfter(new BigDecimal("110.00")).timestamp(Instant.now())
+                .idempotencyKey("key-rev-2").build();
+
+        when(movementRepository.findByIdempotencyKey("key-rev-2")).thenReturn(Mono.empty());
+        when(movementRepository.findByIdempotencyKey("key-out:excess-fee")).thenReturn(Mono.empty());
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                        any(FindAndModifyOptions.class), org.mockito.ArgumentMatchers.eq(Account.class)))
+                .thenReturn(Mono.just(updated));
+        when(movementRepository.save(any(Movement.class))).thenReturn(Mono.just(saved));
+
+        StepVerifier.create(service.reverseWithdrawal(
+                        "acc1", new MovementRequest(new BigDecimal("10")), "key-rev-2", "key-out"))
+                .expectNextMatches(response -> "mv-rev".equals(response.id()))
+                .verifyComplete();
+
+        // no pasa por resolveMovementRules: nunca consulta el conteo mensual ni cobra una
+        // comision propia (revertir un intento no es un movimiento nuevo del cliente).
+        verify(movementRepository, never()).countByAccountIdAndTimestampBetween(
+                anyString(), any(Instant.class), any(Instant.class));
+        verify(accountFeeService, never()).chargeFee(anyString(), any(BigDecimal.class), anyString(), anyString());
+        verify(accountFeeService, never()).refundFee(anyString(), any(BigDecimal.class), anyString(), anyString());
+    }
+
+    @Test
+    void reverseWithdrawal_conComisionPreviaSobreElRetiroOriginal_laDevuelve() {
+        Account updated = savingsAccount();
+        updated.setBalance(new BigDecimal("110.00"));
+        Movement saved = Movement.builder().id("mv-rev").accountId("acc1").type(MovementType.DEPOSIT)
+                .amount(new BigDecimal("10")).balanceAfter(new BigDecimal("110.00")).timestamp(Instant.now())
+                .idempotencyKey("key-rev-3").build();
+        Movement originalFee = Movement.builder().id("mv-fee").accountId("acc1").type(MovementType.FEE)
+                .amount(EXCESS_FEE).balanceAfter(new BigDecimal("95.00")).timestamp(Instant.now())
+                .idempotencyKey("key-out:excess-fee").build();
+
+        when(movementRepository.findByIdempotencyKey("key-rev-3")).thenReturn(Mono.empty());
+        when(movementRepository.findByIdempotencyKey("key-out:excess-fee")).thenReturn(Mono.just(originalFee));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                        any(FindAndModifyOptions.class), org.mockito.ArgumentMatchers.eq(Account.class)))
+                .thenReturn(Mono.just(updated));
+        when(movementRepository.save(any(Movement.class))).thenReturn(Mono.just(saved));
+        when(accountFeeService.refundFee(anyString(), any(BigDecimal.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(service.reverseWithdrawal(
+                        "acc1", new MovementRequest(new BigDecimal("10")), "key-rev-3", "key-out"))
+                .expectNextMatches(response -> "mv-rev".equals(response.id()))
+                .verifyComplete();
+
+        verify(accountFeeService).refundFee("acc1", EXCESS_FEE, "key-out:excess-fee:refund",
+                "Reversion de comision por movimiento compensado");
+    }
+
     // ---------- transfer ----------
 
     private Account accountWith(String id, AccountType type, String balance) {
@@ -626,6 +709,8 @@ class AccountServiceImplTest {
                 .idempotencyKey("tr-3:compensation").build();
 
         when(movementRepository.findByIdempotencyKey("tr-3:out")).thenReturn(Mono.empty());
+        // sin comision cobrada sobre el retiro original: la reversion no tiene nada que devolver.
+        when(movementRepository.findByIdempotencyKey("tr-3:out:excess-fee")).thenReturn(Mono.empty());
         when(accountRepository.findById("acc1")).thenReturn(Mono.just(source));
         when(accountRepository.findById("acc-ft")).thenReturn(Mono.just(destinationFixedTerm));
         when(movementRepository.countByAccountIdAndTimestampBetween(
@@ -648,6 +733,57 @@ class AccountServiceImplTest {
         verify(movementRepository, times(2)).save(any(Movement.class));
         verify(mongoTemplate, times(2)).findAndModify(
                 any(Query.class), any(Update.class), any(FindAndModifyOptions.class), eq(Account.class));
+    }
+
+    @Test
+    void transfer_depositoFallaTrasRetiroConComisionCobrada_compensaYDevuelveLaComision() {
+        // mismo escenario que el anterior, pero el retiro original SI habia disparado una
+        // comision por exceso de movimientos - la compensacion tiene que devolverla tambien
+        // (hallazgo 8.7, PLAN-DE-ACCION.md: antes la plata volvia pero la comision quedaba
+        // cobrada igual).
+        Account source = accountWith("acc1", AccountType.SAVINGS, "65.00");
+        Account sourceUpdated = accountWith("acc1", AccountType.SAVINGS, "35.00");
+        Account sourceRestored = accountWith("acc1", AccountType.SAVINGS, "65.00");
+        Account destinationFixedTerm = Account.builder().id("acc-ft")
+                .accountType(AccountType.FIXED_TERM).profile(AccountProfile.STANDARD)
+                .holders(List.of("cust-ft")).signers(List.of())
+                .balance(new BigDecimal("500.00"))
+                .allowedMovementDay(1).build();
+        Movement outMovement = Movement.builder().id("mv-out").accountId("acc1")
+                .type(MovementType.WITHDRAWAL).amount(new BigDecimal("30.00"))
+                .balanceAfter(new BigDecimal("35.00")).timestamp(Instant.now())
+                .idempotencyKey("tr-6:out").counterpartyAccountId("acc-ft").build();
+        Movement compensationMovement = Movement.builder().id("mv-comp").accountId("acc1")
+                .type(MovementType.DEPOSIT).amount(new BigDecimal("30.00"))
+                .balanceAfter(new BigDecimal("65.00")).timestamp(Instant.now())
+                .idempotencyKey("tr-6:compensation").build();
+        Movement originalFee = Movement.builder().id("mv-fee").accountId("acc1")
+                .type(MovementType.FEE).amount(EXCESS_FEE).balanceAfter(new BigDecimal("35.00"))
+                .idempotencyKey("tr-6:out:excess-fee").build();
+
+        when(movementRepository.findByIdempotencyKey("tr-6:out")).thenReturn(Mono.empty());
+        when(movementRepository.findByIdempotencyKey("tr-6:out:excess-fee"))
+                .thenReturn(Mono.just(originalFee));
+        when(accountRepository.findById("acc1")).thenReturn(Mono.just(source));
+        when(accountRepository.findById("acc-ft")).thenReturn(Mono.just(destinationFixedTerm));
+        when(movementRepository.countByAccountIdAndTimestampBetween(
+                        eq("acc1"), any(Instant.class), any(Instant.class)))
+                .thenReturn(Mono.just(0L));
+        when(mongoTemplate.findAndModify(any(Query.class), any(Update.class),
+                        any(FindAndModifyOptions.class), eq(Account.class)))
+                .thenReturn(Mono.just(sourceUpdated), Mono.just(sourceRestored));
+        when(movementRepository.save(any(Movement.class)))
+                .thenReturn(Mono.just(outMovement), Mono.just(compensationMovement));
+        when(accountFeeService.refundFee(anyString(), any(BigDecimal.class), anyString(), anyString()))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(service.transfer("acc1",
+                        new TransferRequest("acc-ft", new BigDecimal("30.00")), "tr-6"))
+                .expectError(InvalidBusinessRuleException.class)
+                .verify();
+
+        verify(accountFeeService).refundFee("acc1", EXCESS_FEE, "tr-6:out:excess-fee:refund",
+                "Reversion de comision por movimiento compensado");
     }
 
     @Test

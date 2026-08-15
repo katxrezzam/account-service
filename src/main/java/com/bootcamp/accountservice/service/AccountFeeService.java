@@ -83,4 +83,48 @@ public class AccountFeeService {
                         accountId, amount, description))
                 .then();
     }
+
+    /**
+     * Devuelve una comision ya cobrada (hallazgo 8.7, PLAN-DE-ACCION.md: una compensacion de Saga
+     * revierte el movimiento que fallo, pero sin esto la comision que ese movimiento haya
+     * disparado quedaba cobrada igual). Idempotente por la misma clave que {@link #chargeFee} -
+     * no vuelve a acreditar si ya se devolvio. No falla si la cuenta ya no existe. */
+    public Mono<Void> refundFee(
+            String accountId, BigDecimal amount, String idempotencyKey, String description) {
+        return movementRepository.findByIdempotencyKey(idempotencyKey)
+                .hasElement()
+                .flatMap(alreadyRefunded -> alreadyRefunded
+                        ? Mono.empty()
+                        : doRefund(accountId, amount, idempotencyKey, description))
+                .onErrorResume(AccountNotFoundException.class, ex -> {
+                    log.warn("No se pudo devolver comision, cuenta inexistente accountId={}",
+                            accountId);
+                    return Mono.empty();
+                });
+    }
+
+    private Mono<Void> doRefund(
+            String accountId, BigDecimal amount, String idempotencyKey, String description) {
+        Query query = Query.query(Criteria.where("_id").is(accountId));
+        Update update = new Update().inc("balance", amount).currentDate("updatedAt");
+        return mongoTemplate
+                .findAndModify(
+                        query, update,
+                        FindAndModifyOptions.options().returnNew(true), Account.class)
+                .switchIfEmpty(Mono.defer(() ->
+                        Mono.error(new AccountNotFoundException(accountId))))
+                .flatMap(updated -> movementRepository.save(Movement.builder()
+                        .accountId(accountId)
+                        .type(MovementType.FEE_REVERSAL)
+                        .amount(amount)
+                        .balanceAfter(updated.getBalance())
+                        .timestamp(Instant.now())
+                        .idempotencyKey(idempotencyKey)
+                        .description(description)
+                        .build()))
+                .doOnNext(movement -> log.info(
+                        "Comision devuelta accountId={} amount={} desc={}",
+                        accountId, amount, description))
+                .then();
+    }
 }

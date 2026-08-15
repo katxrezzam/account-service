@@ -252,6 +252,22 @@ public class AccountServiceImpl implements AccountService {
         return processMovement(accountId, request, idempotencyKey, MovementType.WITHDRAWAL);
     }
 
+    @Override
+    public Mono<MovementResponse> reverseWithdrawal(
+            String accountId, MovementRequest request, String idempotencyKey,
+            String originalWithdrawalIdempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return Mono.error(new InvalidBusinessRuleException(
+                    "El header Idempotency-Key es obligatorio en depositos y retiros"));
+        }
+        return findExistingMovement(idempotencyKey)
+                .map(MovementMapper::toResponse)
+                .switchIfEmpty(Mono.defer(() -> applyReversal(
+                                accountId, request.amount(), idempotencyKey,
+                                originalWithdrawalIdempotencyKey, null)
+                        .map(MovementMapper::toResponse)));
+    }
+
     private Mono<Account> findEntityById(String id) {
         return accountRepository.findById(id)
                 .switchIfEmpty(Mono.defer(() -> Mono.error(new AccountNotFoundException(id))));
@@ -482,10 +498,9 @@ public class AccountServiceImpl implements AccountService {
             String sourceAccountId, BigDecimal amount, String idempotencyKey, Throwable cause) {
         log.error("Transferencia fallo tras retirar de la cuenta {} - compensando el retiro. "
                 + "idempotencyKey={}", sourceAccountId, idempotencyKey, cause);
-        Mono<Void> compensation = applyBalanceChange(sourceAccountId, amount, MovementType.DEPOSIT)
-                .flatMap(updated -> recordMovement(
-                        updated, MovementType.DEPOSIT, amount,
-                        idempotencyKey + ":compensation", null))
+        Mono<Void> compensation = applyReversal(
+                        sourceAccountId, amount, idempotencyKey + ":compensation",
+                        idempotencyKey + ":out", null)
                 .doOnNext(m -> log.warn(
                         "Compensacion aplicada: se revirtio el retiro de {} en la cuenta {}",
                         amount, sourceAccountId))
@@ -498,6 +513,39 @@ public class AccountServiceImpl implements AccountService {
                 })
                 .then();
         return compensation.then(Mono.<TransferResponse>error(cause));
+    }
+
+    /**
+     * Acredita de vuelta un monto retirado cuya operacion (transferencia local, o pedida por otro
+     * servicio via Kafka) termino fallando en una pata posterior: a diferencia de un deposito
+     * normal, NO pasa por {@link #resolveMovementRules} - revertir un intento no es un movimiento
+     * nuevo del cliente, asi que no cuenta para el limite/comision por exceso ni para el bloqueo
+     * de dia de una cuenta a plazo fijo - y ademas devuelve cualquier comision que se haya cobrado
+     * especificamente por el movimiento que se esta revirtiendo (hallazgo 8.7, PLAN-DE-ACCION.md:
+     * antes la plata volvia pero la comision quedaba cobrada igual, y la propia acreditacion de
+     * reversion podia disparar una comision NUEVA cuando pasaba por el camino normal de deposito,
+     * como pasaba en la compensacion pedida por yanki-service via Kafka).
+     */
+    private Mono<Movement> applyReversal(
+            String accountId, BigDecimal amount, String reversalIdempotencyKey,
+            String originalWithdrawalIdempotencyKey, String counterpartyAccountId) {
+        return applyBalanceChange(accountId, amount, MovementType.DEPOSIT)
+                .flatMap(updated -> recordMovement(
+                        updated, MovementType.DEPOSIT, amount, reversalIdempotencyKey,
+                        counterpartyAccountId))
+                .flatMap(movement -> refundFeeIfCharged(
+                                accountId, originalWithdrawalIdempotencyKey)
+                        .thenReturn(movement));
+    }
+
+    private Mono<Void> refundFeeIfCharged(
+            String accountId, String originalMovementIdempotencyKey) {
+        String feeIdempotencyKey = originalMovementIdempotencyKey + ":excess-fee";
+        return movementRepository.findByIdempotencyKey(feeIdempotencyKey)
+                .flatMap(fee -> accountFeeService.refundFee(
+                        accountId, fee.getAmount(), feeIdempotencyKey + ":refund",
+                        "Reversion de comision por movimiento compensado"))
+                .then();
     }
 
     /**

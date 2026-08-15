@@ -36,6 +36,20 @@ public interface AccountService {
     Mono<MovementResponse> withdraw(
             String accountId, MovementRequest request, String idempotencyKey);
 
+    /**
+     * Revierte un retiro ya aplicado cuya operacion (transferencia local, o pedida por otro
+     * servicio via Kafka) termino fallando en una pata posterior - a diferencia de
+     * {@link #deposit}, NO cuenta como un movimiento nuevo a los fines del limite/comision por
+     * exceso ni del bloqueo de dia de una cuenta a plazo fijo (revertir un intento no es un
+     * movimiento nuevo del cliente), y devuelve cualquier comision que se haya cobrado
+     * especificamente por el retiro que se esta revirtiendo. originalWithdrawalIdempotencyKey es
+     * la Idempotency-Key de ESE retiro (para localizar su comision, si la tuvo) - ver hallazgo 8.7
+     * en PLAN-DE-ACCION.md.
+     */
+    Mono<MovementResponse> reverseWithdrawal(
+            String accountId, MovementRequest request, String idempotencyKey,
+            String originalWithdrawalIdempotencyKey);
+
     /** Transferencia entre dos cuentas (propias o a un tercero del mismo banco - mecanicamente
      * identicas, ambas viven en account-service). sourceAccountId sale por path variable. */
     Mono<TransferResponse> transfer(
