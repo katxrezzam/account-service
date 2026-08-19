@@ -1,0 +1,373 @@
+openapi: 3.1.0
+info:
+  title: account-service
+  description: "Cuentas bancarias: CRUD, depositos/retiros/transferencias idempotentes,\
+    \ limites y comisiones por perfil (VIP/PYME/exceso de movimientos)."
+  version: v1
+servers:
+- url: http://localhost:8082
+  description: Generated server url
+paths:
+  /accounts/{id}:
+    get:
+      tags:
+      - account-controller
+      operationId: findById
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+    put:
+      tags:
+      - account-controller
+      operationId: update
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountUpdateRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+    delete:
+      tags:
+      - account-controller
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "204":
+          description: No Content
+  /accounts:
+    get:
+      tags:
+      - account-controller
+      operationId: findAll
+      parameters:
+      - name: holderId
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccountResponse"
+    post:
+      tags:
+      - account-controller
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountRequest"
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+  /accounts/{id}/withdrawals:
+    post:
+      tags:
+      - account-controller
+      operationId: withdraw
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MovementRequest"
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/MovementResponse"
+  /accounts/{id}/transfers:
+    post:
+      tags:
+      - account-controller
+      operationId: transfer
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferRequest"
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/TransferResponse"
+  /accounts/{id}/deposits:
+    post:
+      tags:
+      - account-controller
+      operationId: deposit
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MovementRequest"
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/MovementResponse"
+  /accounts/{id}/movements:
+    get:
+      tags:
+      - account-controller
+      operationId: findMovements
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MovementResponse"
+components:
+  schemas:
+    AccountUpdateRequest:
+      type: object
+      properties:
+        holders:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          minItems: 1
+        signers:
+          type: array
+          items:
+            type: string
+            minLength: 1
+      required:
+      - holders
+    AccountResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        accountType:
+          type: string
+          enum:
+          - SAVINGS
+          - CHECKING
+          - FIXED_TERM
+        profile:
+          type: string
+          enum:
+          - STANDARD
+          - VIP
+          - PYME
+        holders:
+          type: array
+          items:
+            type: string
+        signers:
+          type: array
+          items:
+            type: string
+        balance:
+          type: number
+        allowedMovementDay:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AccountRequest:
+      type: object
+      properties:
+        accountType:
+          type: string
+          enum:
+          - SAVINGS
+          - CHECKING
+          - FIXED_TERM
+        profile:
+          type: string
+          enum:
+          - STANDARD
+          - VIP
+          - PYME
+        holders:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          minItems: 1
+        signers:
+          type: array
+          items:
+            type: string
+            minLength: 1
+        openingAmount:
+          type: number
+          minimum: 0.0
+        allowedMovementDay:
+          type: integer
+          format: int32
+          maximum: 28
+          minimum: 1
+      required:
+      - accountType
+      - holders
+      - openingAmount
+    MovementRequest:
+      type: object
+      properties:
+        amount:
+          type: number
+          minimum: 0.0
+      required:
+      - amount
+    MovementResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        accountId:
+          type: string
+        type:
+          type: string
+          enum:
+          - DEPOSIT
+          - WITHDRAWAL
+          - FEE
+          - FEE_REVERSAL
+        amount:
+          type: number
+        balanceAfter:
+          type: number
+        timestamp:
+          type: string
+          format: date-time
+        description:
+          type: string
+        counterpartyAccountId:
+          type: string
+    TransferRequest:
+      type: object
+      properties:
+        destinationAccountId:
+          type: string
+          minLength: 1
+        amount:
+          type: number
+          minimum: 0.0
+      required:
+      - amount
+      - destinationAccountId
+    TransferResponse:
+      type: object
+      properties:
+        sourceAccountId:
+          type: string
+        destinationAccountId:
+          type: string
+        amount:
+          type: number
+        sourceBalanceAfter:
+          type: number
+        destinationBalanceAfter:
+          type: number
+        timestamp:
+          type: string
+          format: date-time
